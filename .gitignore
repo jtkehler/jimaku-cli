@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Agent files
+CLAUDE.md
+AGENTS.md
+.claude/
+
+# Test scaffolding (not committed yet)
+tests/

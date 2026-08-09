@@ -1,6 +1,5 @@
 import json
 import requests
-from platformdirs import user_config_dir
 from typing import Any
 
 
