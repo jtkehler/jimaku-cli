@@ -16,17 +16,16 @@ class ConfigError(Exception):
     """The config file exists but could not be read or understood."""
 
 
-def config_path() -> Path:
-    return user_config_path(APP_NAME) / CONFIG_FILENAME
-
-
 @dataclass
 class Config:
     api_key: str | None = None
 
+def get_config_path() -> Path:
+    return user_config_path(APP_NAME) / CONFIG_FILENAME
+
 def load_config() -> Config:
     env_api_key = os.environ.get(API_KEY_ENV_VAR)
-    path = config_path()
+    path = get_config_path()
     if not path.exists():
         return Config(api_key=env_api_key)
 
