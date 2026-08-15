@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 from typing import Annotated
 
+import anitopy
 import guessit
 import requests
 import typer
@@ -89,12 +90,8 @@ def download(
 
     problems = 0
     for video in videos:
-        parsed = guessit.guessit(video)
-        episode: int | None = (
-            ep if isinstance(ep := parsed.get("episode"), int) else None
-        )
-        media_type = parsed.get("type")
-        if not episode and media_type == "episode":
+        episode = parse_episode(video.name)
+        if episode is None and guessit.guessit(video).get("type") == "episode":
             print(f"warn  {video.name}: could not determine an episode number")
             problems += 1
             continue
@@ -121,6 +118,8 @@ def download(
                 output_name(video, file.name, remote_release) if rename else file.name
             )
             output_path = directory / output_filename
+            # TODO: Deduplicate same-path candidates within a run so --overwrite
+            # writes only the highest-ranked remote subtitle to each target.
             if output_path.exists() and not overwrite:
                 print(f"skip  {video.name} -> {output_path.name} already present")
                 continue
@@ -135,6 +134,23 @@ def download(
             # postprocessing goes here
 
     raise typer.Exit(1 if problems else 0)
+
+
+def parse_episode(filename: str) -> int | None:
+    """Parse a single numeric episode with guessit, falling back to anitopy."""
+    episode = guessit.guessit(filename).get("episode")
+    if isinstance(episode, int):
+        return episode
+
+    parsed = anitopy.parse(filename)
+    if parsed is None:
+        return None
+
+    # might be worth switching to anitopy first, handles episode range better
+    episode = parsed.get("episode_number")
+    if isinstance(episode, str) and episode.isdecimal():
+        return int(episode)
+    return None
 
 
 def parse_release(filename: str) -> str | None:
