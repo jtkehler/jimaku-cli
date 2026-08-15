@@ -1,53 +1,141 @@
 import re
-from collections import defaultdict
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated
 
 import guessit
 import requests
+import typer
 
 from .api import FileEntry, JimakuClient, JimakuError
+from .config import config
 
-# Anything a request or a write to disk can fail with. Caught per file so one bad
-# episode does not abort a nightly run.
+# Expected network, API, and filesystem failures. Caught per file so one bad
+# transfer does not abort the rest of a batch run.
 TRANSFER_ERRORS = (JimakuError, requests.RequestException, OSError)
 
 VIDEO_EXTS = frozenset({".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts", ".ogm"})
 SUBTITLE_EXTS = frozenset({".srt", ".ass", ".ssa", ".vtt", ".sub"})
 
-@dataclass(frozen=True)
-class DownloadSpec:
-    entry_id: int
-    directory: Path
-    release: list[str] = field(default_factory=list)
-    offset: int = 0
-    lang: str = "ja"
-    align: bool = False
-    strip_ih: bool = False
-    overwrite: bool = False
-    all: bool = False
+LANG = "ja"
 
-    def to_args(self) -> list[str]:
-        """Render as argv for `jimaku download`. Round-trips with the Typer signature."""
-        args = ["jimaku", "download", str(self.directory.expanduser().resolve())]
-        args += ["--id", str(self.entry_id)]
-        for pattern in self.release:
-            args += ["--release", pattern]
-        if self.offset:
-            args += ["--offset", str(self.offset)]
-        if self.overwrite:
-            args.append("--overwrite")
-        if self.align:
-            args.append("--align")
-        if self.strip_ih:
-            args.append("--strip-ih")
-        return args
+app = typer.Typer()
+
+download_config = config.get("download", {})
 
 
-def parse_episode(filename: str) -> int | None:
-    episode = guessit.guessit(filename).get("episode")
-    return episode if isinstance(episode, int) else None
+@app.command()
+def download(
+    ctx: typer.Context,
+    entry_id: Annotated[int, typer.Option("--id", help="jimaku entry ID.")],
+    directory: Annotated[
+        Path, typer.Argument(help="Directory of video files to subtitle.")
+    ] = Path("."),
+    release: Annotated[
+        list[str],
+        typer.Option(
+            help=(
+                "Release to fetch, repeatable; every one that matches is downloaded, "
+                "each to its own file. Matched case-insensitively against the release "
+                "group or streaming service in the remote filename, or prefix with "
+                "`re:` for a regex. Omit to take whatever is there."
+            ),
+        ),
+    ] = download_config.get("release", []),  # noqa: B008
+    rename: Annotated[
+        bool,
+        typer.Option(
+            help="Rename downloaded subtitles to match their video files.",
+        ),
+    ] = download_config.get("rename", False),
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            help="Re-download episodes that already have subtitles.",
+        ),
+    ] = download_config.get("overwrite", False),
+    align: Annotated[
+        bool,
+        typer.Option(
+            help="Align subtitles with ffsubsync. (Placeholder)",
+        ),
+    ] = download_config.get("align", False),
+    strip_ih: Annotated[
+        bool,
+        typer.Option(
+            help="Remove text for hearing impaired. (Placeholder)",
+        ),
+    ] = download_config.get("strip_ih", False),
+    download_all: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Download all matching subtitle files. When disabled, only the best match is downloaded",
+        ),
+    ] = download_config.get("all", False),
+):
+    """Download subtitles for the video files in a directory."""
+    client: JimakuClient = ctx.obj
+
+    directory = directory.expanduser()
+    if not directory.is_dir():
+        print(f"error: {directory} is not a directory")
+        raise typer.Exit(1)
+
+    siblings = sorted(path for path in directory.iterdir() if path.is_file())
+    videos = [path for path in siblings if path.suffix.lower() in VIDEO_EXTS]
+    if not videos:
+        print(f"error: no video files in {directory}")
+        raise typer.Exit(1)
+
+    problems = 0
+    for video in videos:
+        parsed = guessit.guessit(video)
+        episode: int | None = (
+            ep if isinstance(ep := parsed.get("episode"), int) else None
+        )
+        media_type = parsed.get("type")
+        if not episode and media_type == "episode":
+            print(f"warn  {video.name}: could not determine an episode number")
+            problems += 1
+            continue
+        try:
+            remote_files = client.get_files(entry_id, episode)
+        except TRANSFER_ERRORS as e:
+            print(
+                f"error {video.name}: failed to retrieve files for episode {episode}: {e}"
+            )
+            problems += 1
+            continue
+
+        filtered = filter_release(remote_files, release)
+        to_download = filtered if download_all else filtered[:1]
+
+        if not to_download:
+            print(f"warn  {video.name}: no subtitle matched for episode {episode}")
+            problems += 1
+            continue
+
+        for file in to_download:
+            remote_release = parse_release(file.name)
+            output_filename = (
+                output_name(video, file.name, remote_release) if rename else file.name
+            )
+            output_path = directory / output_filename
+            if output_path.exists() and not overwrite:
+                print(f"skip  {video.name} -> {output_path.name} already present")
+                continue
+
+            try:
+                client.download_file(file.url, output_path)
+            except TRANSFER_ERRORS as e:
+                print(f"error {video.name} -> {output_path.name}: download failed: {e}")
+                problems += 1
+                continue
+            print(f"ok    {video.name} -> {output_path.name}")
+            # postprocessing goes here
+
+    raise typer.Exit(1 if problems else 0)
+
 
 def parse_release(filename: str) -> str | None:
     """The release group, falling back to the streaming service.
@@ -62,9 +150,10 @@ def parse_release(filename: str) -> str | None:
             return release
     return None
 
+
 def match(pattern: str, filename: str) -> bool:
     """Returns whether or not single release pattern matches filename.
- 
+
     Pattern starting with `re:` parses as regex, otherwise matches guessit release group or streaming service (case insensitive).
     """
     if pattern.startswith("re:"):
@@ -73,37 +162,28 @@ def match(pattern: str, filename: str) -> bool:
         release = parse_release(filename)
         return release is not None and pattern.lower() == release.lower()
 
-def select(
-    file_candidates: Sequence[FileEntry], release_patterns: Sequence[str]
-) -> dict[str, FileEntry]:
-    """The file chosen for each release pattern, in the order the patterns were given.
 
-    Returns dict of { release pattern : file entry }, choosing most recent entry when there are multiple per release.
-    """
-    selected: dict[str, FileEntry] = {}
+def filter_release(
+    file_candidates: list[FileEntry], release_patterns: list[str]
+) -> list[FileEntry]:
+    """Filter to subtitle files, ordering matches by release-pattern priority."""
+    valid_subtitles = [
+        file
+        for file in file_candidates
+        if Path(file.name).suffix.lower() in SUBTITLE_EXTS
+    ]
+    if not release_patterns:
+        return valid_subtitles
+    filtered: list[FileEntry] = []
     for pattern in release_patterns:
-        matched = [file for file in file_candidates if match(pattern, file.name)]
-        if matched:
-            selected[pattern] = max(matched, key=lambda f: f.last_modified)
-    return selected
+        matched = [file for file in valid_subtitles if match(pattern, file.name)]
+        matched.sort(key=lambda file: file.name)
+        matched.sort(key=lambda file: file.last_modified, reverse=True)
+        filtered.extend(matched)
+    return filtered
 
-def has_subtitle(video: Path, siblings: Iterable[Path]) -> Path | None:
-    """An already-present subtitle for this video, ignoring provider/language suffixes.
 
-    Everything between the video's stem and the extension is ignored, which is what
-    keeps a changed --release from triggering a full re-download. Matching on the
-    literal stem plus a dot stops `Show - 01.mkv` from claiming
-    `Show - 01 (1080p).ja.srt`.
-    """
-    prefix = f"{video.stem}."
-    for sibling in siblings:
-        if sibling.name.startswith(prefix) and sibling.suffix.lower() in SUBTITLE_EXTS:
-            return sibling
-    return None
-
-def output_name(
-    video: Path, remote_name: str, lang: str, provider: str | None
-) -> str:
+def output_name(video: Path, remote_name: str, provider: str | None) -> str:
     """Sidecar filename: the video's stem, then the provider, then the language.
 
     Language goes last because media servers scan suffix tokens right-to-left and
@@ -112,85 +192,5 @@ def output_name(
     parts = [video.stem]
     if provider:
         parts.append(provider)
-    parts.append(lang)
+    parts.append(LANG)
     return ".".join(parts) + Path(remote_name).suffix
-
-
-def run_download(client: JimakuClient, spec: DownloadSpec) -> int:
-    """Download one subtitle per video in the directory. Returns an exit code."""
-    directory = spec.directory.expanduser()
-    if not directory.is_dir():
-        print(f"error: {directory} is not a directory")
-        return 1
-
-    siblings = sorted(path for path in directory.iterdir() if path.is_file())
-    videos = [path for path in siblings if path.suffix.lower() in VIDEO_EXTS]
-    if not videos:
-        print(f"error: no video files in {directory}")
-        return 1
-
-    try:
-        remote_files = client.get_files(spec.entry_id)
-    except TRANSFER_ERRORS as exc:
-        print(f"error: could not list files for entry {spec.entry_id}: {exc}")
-        return 1
-
-    # Bucket the remote listing by episode once. Archives and other non-subtitle
-    # uploads are dropped here rather than filtered per episode.
-    buckets: dict[int, list[FileEntry]] = defaultdict(list)
-    for remote in remote_files:
-        if Path(remote.name).suffix.lower() not in SUBTITLE_EXTS:
-            continue
-        episode = parse_episode(remote.name)
-        if episode is not None:
-            buckets[episode].append(remote)
-
-    parsed = [(video, parse_episode(video.name)) for video in videos]
-    parsed.sort(key=lambda item: (item[1] is None, item[1] or 0, item[0].name))
-
-    problems = 0
-    for video, episode in parsed:
-        if episode is None:
-            print(f"warn  {video.name}: could not determine an episode number")
-            problems += 1
-            continue
-
-        # Skip-existing is checked before selection, so a directory that is already
-        # complete stays quiet on a nightly run even if --release no longer matches
-        # anything remote.
-        existing = has_subtitle(video, siblings)
-        if existing is not None and not spec.overwrite:
-            print(f"skip  {video.name} -> {existing.name} already present")
-            continue
-
-        remote_episode = episode + spec.offset
-        selections = select(buckets.get(remote_episode, []), spec.release)
-        if not selections:
-            print(
-                f"warn  {video.name}: no subtitle matched for episode {remote_episode}"
-            )
-            problems += 1
-            continue
-
-        # One file per release. The provider goes into the filename, so several
-        # releases of the same episode sit side by side instead of overwriting.
-        written: list[Path] = []
-        for provider, remote in selections.items():
-            target = directory / output_name(video, remote.name, spec.lang, provider)
-            try:
-                client.download_file(remote.url, target)
-            except TRANSFER_ERRORS as exc:
-                print(f"error {video.name} -> {target.name}: download failed: {exc}")
-                problems += 1
-                continue
-            written.append(target)
-            print(f"ok    {video.name} -> {target.name}")
-
-        # Same provider and extension means the rename landed on the existing file.
-        # A different one leaves both behind, and the media server would show two
-        # tracks. Not deleted automatically: the leftover may be a hand-made subtitle
-        # in another language, which --overwrite has no business discarding.
-        if existing is not None and existing not in written:
-            print(f"      note: {existing.name} is still there; remove it by hand")
-
-    return 1 if problems else 0
