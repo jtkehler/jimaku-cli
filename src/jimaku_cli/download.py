@@ -137,19 +137,20 @@ def download(
 
 
 def parse_episode(filename: str) -> int | None:
-    """Parse a single numeric episode with guessit, falling back to anitopy."""
+    """Parse a single numeric episode with anitopy, falling back to guessit.
+
+    anitopy extracts episode number in some cases where guessit won't,
+    it also runs faster and is the same library that Jimaku uses.
+    """
+    parsed = anitopy.parse(filename)
+    if parsed is not None:
+        episode = parsed.get("episode_number")
+        if isinstance(episode, str) and episode.isdecimal():
+            return int(episode)
+
     episode = guessit.guessit(filename).get("episode")
     if isinstance(episode, int):
         return episode
-
-    parsed = anitopy.parse(filename)
-    if parsed is None:
-        return None
-
-    # might be worth switching to anitopy first, handles episode range better
-    episode = parsed.get("episode_number")
-    if isinstance(episode, str) and episode.isdecimal():
-        return int(episode)
     return None
 
 
