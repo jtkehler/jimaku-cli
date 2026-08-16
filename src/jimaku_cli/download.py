@@ -208,6 +208,6 @@ def output_name(video: Path, remote_name: str, provider: str | None) -> str:
     """
     parts = [video.stem]
     if provider:
-        parts.append(provider)
+        parts.append(provider.lower())
     parts.append(LANG)
-    return ".".join(parts) + Path(remote_name).suffix
+    return ".".join(parts) + Path(remote_name).suffix.lower()
