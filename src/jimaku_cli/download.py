@@ -7,6 +7,7 @@ import guessit
 import requests
 import typer
 
+from . import postprocess
 from .api import FileEntry, JimakuClient, JimakuError
 from .config import config
 
@@ -57,7 +58,7 @@ def download(
     align: Annotated[
         bool,
         typer.Option(
-            help="Align subtitles with ffsubsync. (Placeholder)",
+            help="Align subtitles to the video's audio with ffsubsync.",
         ),
     ] = download_config.get("align", False),
     strip_ih: Annotated[
@@ -131,7 +132,18 @@ def download(
                 problems += 1
                 continue
             print(f"ok    {video.name} -> {output_path.name}")
-            # postprocessing goes here
+
+            if align:
+                try:
+                    postprocess.sync_subtitle(output_path, video)
+                # ffsubsync reaches ffmpeg, the filesystem and a stack of parsers, so
+                # its failure modes are not worth enumerating: report and move on
+                # rather than discard a subtitle that downloaded successfully.
+                except Exception as e:  # noqa: BLE001
+                    print(
+                        f"error {video.name} -> {output_path.name}: alignment failed: {e}"
+                    )
+                    problems += 1
 
     raise typer.Exit(1 if problems else 0)
 
