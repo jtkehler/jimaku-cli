@@ -64,7 +64,7 @@ def download(
     strip_ih: Annotated[
         bool,
         typer.Option(
-            help="Remove text for hearing impaired. (Placeholder)",
+            help="Remove hearing-impaired annotations and furigana.",
         ),
     ] = download_config.get("strip_ih", False),
     download_all: Annotated[
@@ -133,6 +133,24 @@ def download(
                 continue
             print(f"ok    {video.name} -> {output_path.name}")
 
+            # Before aligning, not after. ffsubsync correlates cue timings against
+            # the reference, and the cues this drops -- sound effects, music
+            # markers -- are the ones with no speech under them, so removing them
+            # sharpens the signal rather than costing it anchors. Nothing that
+            # survives moves, so no true anchor is lost either way.
+            if strip_ih:
+                try:
+                    postprocess.strip_ih(output_path)
+                # Parse errors, unreadable encodings and the filesystem: report
+                # and move on rather than discard a subtitle that downloaded.
+                except Exception as e:  # noqa: BLE001
+                    print(
+                        f"error {video.name} -> {output_path.name}: strip failed: {e}"
+                    )
+                    problems += 1
+
+            # Its own try, so a failed strip still gets aligned and a failed
+            # align still leaves the stripped subtitle in place.
             if align:
                 try:
                     postprocess.sync_subtitle(output_path, video)
@@ -172,6 +190,12 @@ def parse_release(filename: str) -> str | None:
     guessit files a name like "Netflix" under either key depending on the rest of
     the filename, so the first key that resolves to a name wins.
     """
+    # TODO: A disposition flag can win the release_group key. guessit reads
+    # `Show.S01E01.1080p.AMZN.WEB-DL.ja[sdh].srt` as release_group "sdh", burying
+    # streaming_service "Amazon Prime" -- so `--release Amazon` matches nothing, and
+    # --rename writes `stem.sdh.ja.srt`, the mislabeled-track collision. Skipping
+    # `sdh`/`cc`/`hi`/`forced` here needs the label slugged too, or "Amazon Prime"
+    # puts a space in the filename.
     guessit_out = guessit.guessit(filename)
     for key in ["release_group", "streaming_service"]:
         release = guessit_out.get(key)

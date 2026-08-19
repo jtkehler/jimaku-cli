@@ -16,3 +16,4 @@ AGENTS.md
 
 # Test scaffolding (not committed yet)
 tests/
+.pytest_cache/
