@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Agent files
-CLAUDE.md
+#CLAUDE.md
 AGENTS.md
 .claude/
 
