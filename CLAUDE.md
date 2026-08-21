@@ -142,18 +142,20 @@ since a truncated file counts as an existing subtitle and would be skipped forev
 video: report, count it, continue to the next. Post-processing failure likewise must not fail the
 run or discard a subtitle that already downloaded successfully.
 
-**Stripping hearing-impaired text means parentheses, and only parentheses.** Speaker labels, sound
-effects and furigana all arrive parenthesised, and halfwidth versus fullwidth distinguishes none of
-them — one provider writes labels fullwidth and ruby halfwidth, another writes both halfwidth — so
-every balanced group goes. The other brackets are dialogue and must survive: `＜＞` and `《》` are
-interior monologue, `「」` quotation. Furigana counts as hearing-impaired text because inline
-readings are what stop a dictionary popup resolving the word underneath.
+**Parentheses are candidates, not proof of hearing-impaired text.** Japanese providers use both
+halfwidth and fullwidth parentheses for speaker labels, sound effects and ruby, but also for real
+whispered or mouthed dialogue. Remove a balanced group only when it precedes visible dialogue and
+does not itself look spoken, repeats elsewhere as a learned speaker label, occupies a display line
+and ends in stable sound/source wording, or is a kana reading immediately after kanji. An ambiguous
+full-cue parenthetical stays. False negatives are cheaper than deleted dialogue. Other brackets stay:
+`＜＞`, `《》` and `｟｠` carry thoughts, narration or speech in the corpus; `「」` carries quotation.
+HTML ruby is semantic rather than heuristic: remove closed `<rt>`/`<rp>` readings and unwrap the
+`<ruby>`/`<rb>` container while retaining its base text.
 
-The line is who made the mess. Annotation goes, and so does the litter removing it leaves — an
-`<i></i>` with nothing left between its halves once `<i>（ドアが開く音）</i>` is gone is not
-something the cue ever asked for. Punctuation and formatting the strip did not create stay, whatever
-they look like: an unmatched parenthesis is left where it is, and ARIB's `((…))` passes through
-whole.
+The line is who made the mess. Annotation goes, and so does empty markup removing it leaves — an
+`<i></i>` with nothing between its halves once `<i>（ドアが開く音）</i>` is gone is not something
+the cue ever asked for. Punctuation and formatting the strip did not create stay: an unmatched or
+mismatched parenthesis is left where it is, and ARIB's `((…))` passes through whole.
 
 Two things follow from how the files are actually built, and each is load-bearing. Groups **nest**,
 so `（大谷敦士(おおたにあつし)）` needs a matcher, not a regex that stops at the first close. And a
@@ -167,21 +169,15 @@ inside an open group the same pair is two nested closes, which is exactly what t
 writes both labels and ruby halfwidth produces — `(大谷敦士(おおたにあつし))`, where the group must
 still strip. Only halfwidth doubles this way — `)）` is a nested ruby close and must still pair.
 
-A cue is dropped only when it is *nothing but* symbols and padding: `♪～` is noise, and so is a `📱`
-left standing alone once `📱（受信音）` loses its parentheses — the icon is annotation for the same
-reason the notes are. `♪ lyrics ♪` is a song worth keeping, and a cue of bare punctuation — `…`,
-`！？` — is a line, which is why the test is symbols rather than the looser "no letters or digits".
-Override tags are never rewritten — a scan that counted the parens inside `{\pos(320,240)}` would
-leave `{\pos}` — and comment lines and drawings are left alone. SRT's `<i>` and its kin are markup
-on the same terms: never content the strip can read, never something a rewrite may convert.
-A subtitle with nothing to strip is left untouched on disk rather than rewritten with equivalent
-content, and the same promise holds one level down for **any cue the strip did not touch**: it keeps
-its positioning and styling verbatim through the save, so no line comes back differing only by a
-lost `{\an8}` or `<i>`. Inside a cue the strip did touch the promise is weaker, and accepted as
-such. An emptied line goes whole, tags and all, so `<i>（信子）\Nおはよう</i>` comes back as
-`おはよう</i>` — upright, having lost the opener that spanned the line the label occupied.
-Reconstructing markup the strip did not create is not worth its cost: the shape does not occur
-anywhere in the sample corpus.
+A marker-only music cue such as `♪～` is dropped, while `♪ lyrics ♪`, unrelated symbols, bare
+punctuation and ALL-CAPS text stay. Override blocks are opaque — counting the parentheses inside
+`{\pos(320,240)}` would corrupt it — and comment lines and drawings are left alone. SRT's `<i>` and
+its kin are markup on the same terms. Only a cue whose content changed is tidied; if removing a line
+would strand a spanning tag, its markup is carried to the surviving text, so
+`<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`. A subtitle with nothing to strip is left
+byte-for-byte untouched. Once any cue changes, pysubs2 still serializes the format as a whole, so
+do not promise byte identity for other cues in that file. WebVTT is deliberately left untouched
+because pysubs2 does not preserve its cue identifiers and settings.
 
 ## Logging and exit status
 
