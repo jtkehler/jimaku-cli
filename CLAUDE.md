@@ -152,10 +152,37 @@ full-cue parenthetical stays. False negatives are cheaper than deleted dialogue.
 HTML ruby is semantic rather than heuristic: remove closed `<rt>`/`<rp>` readings and unwrap the
 `<ruby>`/`<rb>` container while retaining its base text.
 
+**What a word is evidence of decides which test it feeds.** Sound wording — `音`, `声`, `笑い`,
+`ため息` — says the group describes what is heard, so it vetoes learning that group as a speaker
+label. Wording that names *who* speaks does not: `一同`, `全員`, `ナレーション`, `通訳`, `電子音声`
+and the languages label the line they precede exactly as `（信子）` does, and vetoing them would
+leave `（一同）はい！` standing while the identical `（２人）` stripped. Source is read before sound,
+so `電子音声` is not the `声` its tail ends in. `鈴` is matched whole rather than as a tail, because
+it is also how a name ends and `（美鈴）` is a girl, not a bell; `鐘`, `息` and `咳` end far more
+sound words than names, so they stay tails and `（震える息）` goes on stripping.
+
+**A group is normalized against furigana written inside it before either test, not just before the
+vocabulary.** `(大谷敦士(おおたにあつし))` is 64% hiragana with the reading and none without it, so
+counting its kana is how a label ends up read as speech.
+
+**An honorific or a role names a person, not a line.** A group ending in `ちゃん`, `さん`, `くん`,
+`君`, `様`, `先生`, `せんせー`, `たち` or `達` is a label however much kana it holds. Bare kana names
+— `（しんのすけ）`, `（はるか）` — are ambiguous by shape and are deliberately still kept.
+
 The line is who made the mess. Annotation goes, and so does empty markup removing it leaves — an
 `<i></i>` with nothing between its halves once `<i>（ドアが開く音）</i>` is gone is not something
 the cue ever asked for. Punctuation and formatting the strip did not create stay: an unmatched or
 mismatched parenthesis is left where it is, and ARIB's `((…))` passes through whole.
+
+A display line may open with a marker that is not dialogue, and who made the mess decides that too.
+Anything alphanumeric before the group is real text and blocks the strip. What is left does not
+block, and of it only an audio-source marker leaves with the group — a phone, television or speaker
+icon, or the chevrons a rip writes around an off-screen voice, because these annotate exactly what
+the group annotates. Everything else that renders is retained: `-` and `・` still separate two
+speakers once the names are gone, a bracket still needs its other half, and a music marker is the
+music rule's to drop. Measured over the corpus, `≪` carries a closing `≫` on 0.4% of the lines it
+opens while `《`, `「` and `〈` carry theirs on 63–96%, which is what tells a marker from a pair.
+Only the marker's own characters go, never the override blocks around them.
 
 Two things follow from how the files are actually built, and each is load-bearing. Groups **nest**,
 so `（大谷敦士(おおたにあつし)）` needs a matcher, not a regex that stops at the first close. And a

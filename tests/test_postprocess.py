@@ -255,3 +255,87 @@ def test_strip_ih_leaves_webvtt_byte_identical(tmp_path: Path) -> None:
     strip_ih(subtitle)
 
     assert subtitle.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # `一同` and `電子音声` name who speaks, so their wording no longer vetoes
+        # learning the group as a label the way sound wording does.
+        ("（一同）はい！", "はい！"),
+        ("（電子音声）「起動します」", "「起動します」"),
+        # `美鈴` is a girl, not the bell her name ends in.
+        ("（美鈴）うん", "うん"),
+        # Furigana written inside a label used to make it read as speech.
+        ("(大谷敦士(おおたにあつし))おはよう", "おはよう"),
+        # An honorific or a role names a person however much kana follows.
+        ("（ホネちゃん）ああ", "ああ"),
+        ("（殺せんせー）えー", "えー"),
+        ("（社員たち）おはようございます", "おはようございます"),
+    ],
+)
+def test_strip_parenthesised_removes_labels_that_used_to_read_as_speech(
+    text: str, expected: str
+) -> None:
+    assert strip_parenthesised(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["（震える息）", "（終業の鐘）", "（神主の咳）", "（２人のため息）"]
+)
+def test_sound_wording_still_strips_where_a_name_only_resembles_it(text: str) -> None:
+    assert strip_parenthesised(text) == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The dash still marks two speakers once their names are gone.
+        (r"-（雀）おはよう\N-（社員たち）おはようございます", r"-おはよう\N-おはようございます"),
+        # An icon annotates the same source the group did, so it leaves with it.
+        ("📻（レミ）はい", "はい"),
+        ("≪(足音)", ""),
+        # A bracket is not a marker: removing its opening half would strand `》`.
+        ("《（鎖々美）ふふふ…》", "《ふふふ…》"),
+        # Only the rendered marker goes; the override blocks around it stay.
+        (
+            r"{\pos(172,407)}📻{\fscx50}（レミ）はい",
+            r"{\pos(172,407)}{\fscx50}はい",
+        ),
+    ],
+)
+def test_a_line_may_open_with_a_marker_that_is_not_dialogue(
+    text: str, expected: str
+) -> None:
+    assert strip_parenthesised(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Bare kana names are ambiguous by shape and deliberately out of scope.
+        "（しんのすけ）ほっほーい！",
+        "（はるか）なんか",
+        # Anything alphanumeric before the group is real text and blocks the strip.
+        "Kayano (2 votes)",
+        "かまじ（釜次）",
+    ],
+)
+def test_out_of_scope_groups_are_deliberately_left_alone(text: str) -> None:
+    assert strip_parenthesised(text) == text
+
+
+def test_leading_label_is_stripped_without_any_learned_labels() -> None:
+    """`search` and `download` share one matcher; it has to work standalone."""
+    assert strip_parenthesised("（大谷）おはよう") == "おはよう"
+
+
+def test_strip_ih_drops_a_cue_that_was_only_a_marker_and_a_sound(
+    tmp_path: Path,
+) -> None:
+    subtitle = tmp_path / "marked.ja.srt"
+    write_srt(subtitle, ["≪(足音)", "📻（レミ）はい", "-（雀）おはよう", "♪～（BGM）"])
+
+    strip_ih(subtitle)
+
+    assert load_texts(subtitle) == ["はい", "-おはよう"]

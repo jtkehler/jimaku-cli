@@ -3,6 +3,7 @@
 import codecs
 import os
 import re
+import unicodedata
 from collections.abc import Collection, Iterable
 from pathlib import Path
 
@@ -61,101 +62,45 @@ EMPTY_PAIR = re.compile(
 MUSIC_PADDING = "~～〜ー-–—―‐"
 MUSIC_NOTES = "♪♫♬♩"
 
+# A display line may open with a marker that belongs to the annotation rather
+# than to the dialogue. Anything alphanumeric is real text and blocks the strip;
+# the rest does not, and of that only an audio-source marker leaves with the
+# group it annotates -- an icon for a phone, a television or a speaker, or the
+# chevrons a rip writes around an off-screen voice. Everything else that renders
+# is retained, because the strip did not put it there: a dash or a bullet still
+# separates two speakers once their names are gone, a bracket still needs its
+# other half, and a music marker is the music rule's to drop, not this one's.
+# Category is the test, with the chevrons named because they are symbols that a
+# bracket rule would otherwise catch: measured over the corpus `≪` carries a
+# closing `≫` on 0.4% of the lines it opens, while `《`, `「` and `〈` carry
+# theirs on 63-96%, so the chevrons mark and the brackets pair.
+ANNOTATION_MARKS = frozenset("≪≫∈＼")
+MARK_CATEGORIES = frozenset(("So", "Co", "Cf"))
+
 # Standalone parentheticals are only removed when their wording is clearly an
 # accessibility label. False negatives are intentional: `(今日は仕事でしょ？)`
-# is dialogue in the corpus, while `（ドアが開く音）` is not. Keep this list to
+# is dialogue in the corpus, while `（ドアが開く音）` is not. Keep these lists to
 # stable caption vocabulary rather than trying to recognize arbitrary Japanese
 # sentences as actions or sounds.
-ANNOTATION_SUFFIXES = (
-    "BGM",
-    "ＢＧＭ",
-    "あくび",
-    "いななき",
-    "いびき",
-    "うなり声",
-    "おなら",
-    "げっぷ",
-    "さえずり",
-    "ざわめき",
-    "しゃっくり",
-    "くしゃみ",
-    "せき",
-    "せきこみ",
-    "せき込み",
-    "せきばらい",
-    "ため息",
-    "どよめき",
-    "ほえ声",
-    "まね",
-    "アナウンス",
-    "アラーム",
-    "クラクション",
-    "サイレン",
-    "サウンド",
-    "チャイム",
-    "ナレーション",
-    "ナレーター",
-    "ノイズ",
-    "ノック",
-    "ブザー",
-    "ファンファーレ",
-    "ホイッスル",
-    "ベル",
-    "メロディ",
+#
+# The split carries as much weight as the contents. Sound wording is evidence
+# that a group describes what is heard, so it vetoes learning that group as a
+# speaker label. Wording that names *who* speaks is not: `（一同）はい！` labels
+# the line it precedes exactly as `（信子）` does, and vetoing it would leave that
+# label in place while the identical `（２人）` stripped.
+#
+# `鈴` is matched whole rather than as a tail, because it is also how a name ends
+# and `（美鈴）` is a girl, not a bell. Measured over the corpus it is the only one
+# worth that trade: `鐘`, `息` and `咳` end far more sound words than names, so
+# they stay tails and `（震える息）` goes on stripping.
+SPEAKER_SUFFIXES = (
     "一同",
     "全員",
-    "伴奏",
-    "効果音",
-    "口笛",
-    "号砲",
-    "吐息",
-    "咆哮",
-    "地響き",
-    "時報",
-    "声",
-    "声援",
-    "寝息",
-    "悲鳴",
-    "手拍子",
-    "拍手",
-    "指笛",
-    "演奏",
-    "爆発",
-    "笑い",
-    "笑い声",
-    "絶叫",
-    "羽ばたき",
-    "舌打ち",
-    "警笛",
-    "警報",
-    "読経",
+    "ナレーション",
+    "ナレーター",
+    "アナウンス",
     "通訳",
-    "遠ぼえ",
-    "遠吠え",
-    "遠雷",
-    "銃声",
-    "鐘",
-    "雷鳴",
-    "音",
-    "音楽",
-    "鳴き声",
-    "鳴きまね",
-    "鼓動",
-    "鼻息",
-    "鼻歌",
-    "汽笛",
-    "沈黙",
-    "深呼吸",
-    "静寂",
-    "心音",
-    "息",
-    "息切れ",
-    "息遣い",
-    "雄たけび",
-    "嗚咽",
-    "咳",
-    "咳き込み",
-    "咳払い",
+    "電子音声",
     "英語",
     "日本語",
     "外国語",
@@ -164,12 +109,99 @@ ANNOTATION_SUFFIXES = (
     "中国語",
     "台湾語",
     "ドイツ語",
-    "着信",
-    "バイブレーター",
+)
+
+SOUND_WORDS = ("鈴",)
+
+SOUND_SUFFIXES = (
+    "咳",
+    "息",
+    "鐘",
+    "BGM",
+    "あくび",
+    "いななき",
+    "いびき",
+    "うなり声",
+    "おなら",
+    "くしゃみ",
+    "げっぷ",
+    "さえずり",
+    "ざわめき",
+    "しゃっくり",
+    "せき",
+    "せきこみ",
+    "せきばらい",
+    "せき込み",
+    "ため息",
+    "どよめき",
+    "ほえ声",
+    "まね",
+    "アラーム",
+    "クラクション",
     "ゴング",
+    "サイレン",
+    "サウンド",
+    "チャイム",
+    "ノイズ",
+    "ノック",
+    "バイブレーター",
+    "ファンファーレ",
+    "ブザー",
+    "ベル",
+    "ホイッスル",
+    "メロディ",
+    "伴奏",
+    "効果音",
+    "口笛",
+    "号砲",
+    "吐息",
+    "咆哮",
+    "咳き込み",
+    "咳払い",
     "喝采",
+    "嗚咽",
+    "地響き",
+    "声",
+    "声援",
+    "寝息",
+    "心音",
     "怒号",
-    "鈴",
+    "息切れ",
+    "息遣い",
+    "悲鳴",
+    "手拍子",
+    "拍手",
+    "指笛",
+    "時報",
+    "汽笛",
+    "沈黙",
+    "深呼吸",
+    "演奏",
+    "爆発",
+    "着信",
+    "笑い",
+    "笑い声",
+    "絶叫",
+    "羽ばたき",
+    "舌打ち",
+    "読経",
+    "警報",
+    "警笛",
+    "遠ぼえ",
+    "遠吠え",
+    "遠雷",
+    "銃声",
+    "雄たけび",
+    "雷鳴",
+    "静寂",
+    "音",
+    "音楽",
+    "鳴きまね",
+    "鳴き声",
+    "鼓動",
+    "鼻息",
+    "鼻歌",
+    "ＢＧＭ",
 )
 
 SPOKEN_PUNCTUATION = frozenset("！？?!…。、")
@@ -184,6 +216,15 @@ SPOKEN_ENDING = re.compile(
 HIRAGANA = re.compile(r"[ぁ-ゟ]")
 RUBY = re.compile(r"[ぁ-ゟァ-ヿー～〜・･\s]+")
 HAN_AT_END = re.compile(r"[㐀-鿿々〆ヵヶ]$")
+# A group written halfwidth inside another is furigana, and counting its kana
+# would read the label it annotates as speech: `(大谷敦士(おおたにあつし))` is
+# 64% hiragana with the reading and 0% without it.
+NESTED_RUBY = re.compile(r"\(" + RUBY.pattern + r"\)")
+# An honorific or a role names a person, so a group ending in one is a label
+# however much kana it holds.
+NAME_MARKERS = re.compile(
+    r"(?:ちゃん|さん|くん|君|さま|様|先生|せんせー|せんせい|たち|達)$"
+)
 
 
 def strip_ih(subtitle: Path) -> None:
@@ -323,16 +364,22 @@ def group_body(text: str, span: tuple[int, int]) -> str:
     return bare(text[start + 1 : end - 1])
 
 
-def line_context(
-    text: str, spans: Collection[tuple[int, int]], span: tuple[int, int]
-) -> tuple[str, str]:
-    """Visible-line text before and after a parenthetical span."""
+def line_bounds(text: str, span: tuple[int, int]) -> tuple[int, int]:
+    """Index range of the display line a span sits on."""
     start, end = span
     line_start = 0
     for line_break in LINE_BREAK.finditer(text, 0, start):
         line_start = line_break.end()
     next_break = LINE_BREAK.search(text, end)
-    line_end = next_break.start() if next_break else len(text)
+    return line_start, next_break.start() if next_break else len(text)
+
+
+def line_context(
+    text: str, spans: Collection[tuple[int, int]], span: tuple[int, int]
+) -> tuple[str, str]:
+    """Visible-line text before and after a parenthetical span."""
+    start, end = span
+    line_start, line_end = line_bounds(text, span)
     return (
         outside_text(text, spans, line_start, start),
         outside_text(text, spans, end, line_end),
@@ -344,24 +391,114 @@ def contextual_payload(text: str) -> bool:
     return visible(text) and not music_marker_only(text)
 
 
+def opening_payload(before: str) -> bool:
+    """Whether a line opens with dialogue rather than with a marker."""
+    return any(char.isalnum() for char in bare(before))
+
+
+def annotation_marker(opening: str) -> bool:
+    """Whether everything a line renders before a group annotates its source."""
+    return bool(opening) and all(
+        char in ANNOTATION_MARKS
+        or (
+            unicodedata.category(char) in MARK_CATEGORIES
+            and char not in MUSIC_NOTES
+        )
+        or char.isspace()
+        for char in opening
+    )
+
+
+def rendered_positions(
+    text: str, spans: Collection[tuple[int, int]], start: int, end: int
+) -> list[tuple[int, int]]:
+    """Each character a slice renders, one span apiece, markup and groups aside.
+
+    Single characters rather than runs, so that dropping a marker cannot take an
+    override block with it: `{\\pos(172,407)}📻{\\fscx50}（レミ）` must keep both
+    blocks and lose only the icon.
+    """
+    positions: list[tuple[int, int]] = []
+    index = start
+    while index < end:
+        span = next((s for s in spans if s[0] <= index < s[1]), None)
+        if span is not None:
+            index = span[1]
+            continue
+        block = MARKUP.match(text, index)
+        if block and block.end() > index:
+            index = min(block.end(), end)
+            continue
+        positions.append((index, index + 1))
+        index += 1
+    return positions
+
+
+def is_leading_label(
+    text: str,
+    spans: Collection[tuple[int, int]],
+    span: tuple[int, int],
+    body: str,
+) -> bool:
+    """Whether a group names the speaker of dialogue that follows it.
+
+    The question `search` asks while fast-forwarding is the one `download`
+    answers, and the same holds here: learning a label and stripping one are the
+    same test, so they are the same function.
+    """
+    before, _ = line_context(text, spans, span)
+    after = outside_text(text, spans, span[1], len(text))
+    return (
+        not opening_payload(before)
+        and contextual_payload(after)
+        and bool(body)
+        and not looks_spoken(body)
+        and not sound_annotation(body)
+    )
+
+
 def looks_spoken(body: str) -> bool:
     """Whether a parenthetical plausibly contains speech rather than a label."""
+    body = without_nested_ruby(body)
     if body in SPOKEN_WORDS or re.search(r"[A-Za-z]", body):
         return True
     if any(char in SPOKEN_PUNCTUATION for char in body):
         return True
+    # Checked after the punctuation, so a named line that is plainly spoken --
+    # `(庄太さーん\N早く ごはん食べて！)` -- still reads as speech on its `！`.
+    if NAME_MARKERS.search(body):
+        return False
     if SPOKEN_ENDING.search(body):
         return True
     letters = [char for char in body if char.isalpha()]
     return len(letters) >= 5 and len(HIRAGANA.findall(body)) / len(letters) >= 0.6
 
 
+def without_nested_ruby(body: str) -> str:
+    """A group with any furigana written inside it removed."""
+    return NESTED_RUBY.sub("", body)
+
+
+def speaker_annotation(body: str) -> bool:
+    """Whether a group names who is speaking rather than what is heard."""
+    return without_nested_ruby(body).rstrip().endswith(SPEAKER_SUFFIXES)
+
+
+def sound_annotation(body: str) -> bool:
+    """Whether a group ends in established sound wording.
+
+    Checked against the speaker vocabulary first, so `（電子音声）` is a source
+    and not the `声` its tail would otherwise match.
+    """
+    if speaker_annotation(body):
+        return False
+    normalized = without_nested_ruby(body).rstrip()
+    return normalized.endswith(SOUND_SUFFIXES) or normalized in SOUND_WORDS
+
+
 def annotation_label(body: str) -> bool:
-    """Whether a standalone group ends in established sound/source wording."""
-    # Ignore nested halfwidth ruby when checking `（竜の咆哮(ほうこう)）`.
-    without_ruby = re.sub(r"\([ぁ-ゟァ-ヿー～〜・･\s]+\)", "", body)
-    normalized = without_ruby.rstrip()
-    return normalized.endswith(ANNOTATION_SUFFIXES)
+    """Whether a standalone group is established sound or source wording."""
+    return speaker_annotation(body) or sound_annotation(body)
 
 
 def ruby_reading(text: str, span: tuple[int, int], body: str) -> bool:
@@ -381,17 +518,8 @@ def speaker_labels(texts: Iterable[str]) -> set[str]:
     for text in texts:
         spans = parenthesised_spans(text)
         for span in spans:
-            start, end = span
-            before, _ = line_context(text, spans, span)
-            after = outside_text(text, spans, end, len(text))
             body = group_body(text, span)
-            if (
-                not contextual_payload(before)
-                and contextual_payload(after)
-                and body
-                and not looks_spoken(body)
-                and not annotation_label(body)
-            ):
+            if is_leading_label(text, spans, span, body):
                 labels.add(body)
     return labels
 
@@ -404,36 +532,34 @@ def strip_parenthesised(text: str, labels: Collection[str] = ()) -> str:
     voice marker is never treated as an annotation. A group is removed when it
     is a known leading label, clearly precedes visible dialogue, occupies a line
     as an explicit sound/source description, or is a halfwidth kana reading
-    after kanji.
+    after kanji. A marker the line opens with goes when it annotates the same
+    source the group did.
     """
     spans = parenthesised_spans(text)
     drop: list[tuple[int, int]] = []
     for span in spans:
-        start, end = span
+        start, _ = span
         body = group_body(text, span)
         before, after_line = line_context(text, spans, span)
-        after = outside_text(text, spans, end, len(text))
-        explicit_annotation = annotation_label(body)
-        leading_label = (
-            not contextual_payload(before)
-            and contextual_payload(after)
-            and body
-            and not looks_spoken(body)
-            and not explicit_annotation
-        )
         if (
-            (body in labels and not contextual_payload(before))
-            or leading_label
+            (body in labels and not opening_payload(before))
+            or is_leading_label(text, spans, span, body)
             or (
-                explicit_annotation
-                and not contextual_payload(before)
+                annotation_label(body)
+                and not opening_payload(before)
                 and not contextual_payload(after_line)
             )
             or ruby_reading(text, span, body)
         ):
             drop.append(span)
+            opening = bare(before)
+            if annotation_marker(opening):
+                line_start, _ = line_bounds(text, span)
+                drop += rendered_positions(text, spans, line_start, start)
 
-    for start, end in reversed(drop):
+    # Sorted and deduplicated: a marker precedes the group it belongs to, and two
+    # groups on one line report the same marker between them.
+    for start, end in sorted(set(drop), reverse=True):
         text = text[:start] + text[end:]
     return text
 
