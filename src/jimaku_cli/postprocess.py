@@ -16,17 +16,12 @@ PAREN_OPEN = "（("
 PAREN_CLOSE = "）)"
 
 # ARIB doubles a halfwidth delimiter -- `((...))` -- around a voice heard off
-# screen, down a phone, or in memory. Only at the top level: inside an open group
+# screen, down a phone, or in memory. What it wraps is speech, so neither half is
+# annotation and both pass through. Only at the top level: inside an open group
 # the same pair is two nested closes, which is what a provider writing both
 # speaker labels and furigana halfwidth produces. Only halfwidth doubles this
 # way; `)）` is a nested ruby close and must still pair.
 VOICE_MARKER = "()"
-
-# The same off-screen-voice convention written as one character pair -- ARIB's
-# white parens, which Crunchyroll uses. Never a group at any depth: the delimiter
-# goes on its own, so a span that runs on into a later cue behaves the same as
-# one that closes in this one.
-VOICE_BRACKET = "｟｠⦅⦆"
 
 # Only parentheses. The other brackets carry dialogue: `＜＞` and `《》` mark
 # interior monologue, `「」` quotation. One episode in the sample corpus is 101
@@ -115,12 +110,11 @@ def strip_parenthesised(text: str) -> str:
     Groups nest -- `（大谷敦士(おおたにあつし)）` puts furigana inside a speaker
     label -- so a regex stopping at the first close leaves a stray `）` behind.
     A doubled halfwidth delimiter is not a group *at the top level*: what
-    `((...))` wraps is speech, so the marker goes and the line stays, whether the
-    span closes in this cue or runs on into a later one. Inside an open group the
-    same pair is two nested closes -- `(大谷敦士(おおたにあつし))` -- and pairs
-    normally. `｟...｠` is that marker written as one character pair and behaves
-    the same at any depth. Unmatched parentheses are themselves dropped, as
-    stray punctuation.
+    `((...))` wraps is speech, so neither the marker nor the line goes, whether
+    the span closes in this cue or runs on into a later one. Inside an open group
+    the same pair is two nested closes -- `(大谷敦士(おおたにあつし))` -- and
+    pairs normally. An unmatched parenthesis is punctuation the strip did not
+    make, so it is left where it is.
     """
     # Markup is opaque: counting the parens inside `{\pos(320,240)}` would
     # turn it into `{\pos}`, and an HTML tag is markup for the same reason.
@@ -140,62 +134,30 @@ def strip_parenthesised(text: str) -> str:
     position = 0
     while position < len(tokens):
         token = tokens[position]
-        # What the marker wraps is speech, so the marker goes and the line
-        # stays -- the same outcome the unbalanced half already gets when its
-        # span closes in a later cue. Only at the top level: with a group open,
-        # the pair is a nested close and its parent, not a marker.
+        # What the marker wraps is speech, so it is not a group and neither half
+        # is annotation: both are passed through. Only at the top level -- with a
+        # group open, the pair is a nested close and its parent, not a marker.
         if (
             not open_positions
             and token in VOICE_MARKER
             and tokens[position + 1 : position + 2] == [token]
         ):
-            drop[position] = drop[position + 1] = True
             position += 2
-            continue
-        # The one-character form of that marker. Dropped on its own rather
-        # than paired, which is what makes the balanced and cross-cue shapes
-        # agree; what it wraps still strips normally.
-        if token in VOICE_BRACKET:
-            drop[position] = True
-            position += 1
             continue
         if token in PAREN_OPEN:
             open_positions.append(position)
-        elif token in PAREN_CLOSE:
-            if open_positions:
-                for inside in range(open_positions.pop(), position + 1):
-                    drop[inside] = True
-            else:
-                drop[position] = True
+        elif token in PAREN_CLOSE and open_positions:
+            for inside in range(open_positions.pop(), position + 1):
+                drop[inside] = True
         position += 1
-    for unclosed in open_positions:
-        drop[unclosed] = True
 
     return "".join(token for position, token in enumerate(tokens) if not drop[position])
 
 
 def tidy_lines(text: str) -> str:
     """Drop lines a strip emptied, so a removed label leaves no blank line."""
-    kept: list[str] = []
-    carried = ""
-    for line in LINE_BREAK.split(text):
-        # Sweep before testing the line, so a pair the strip hollowed out is
-        # gone rather than counted as styling worth carrying.
-        line = sweep_empty(line.strip())
-        if visible(line):
-            kept.append(carried + line)
-            carried = ""
-        else:
-            # An emptied line can still carry styling the rest of the cue needs
-            # -- but only what opens something. A close whose partner went with
-            # the line would otherwise strand the text after it, which is the
-            # one case where the rewrite loses styling it did not strip.
-            carried += "".join(
-                match.group()
-                for match in MARKUP.finditer(line)
-                if not match.group().startswith("</")
-            )
-    return sweep_empty(r"\N".join(kept))
+    kept = (line.strip() for line in LINE_BREAK.split(text))
+    return sweep_empty(r"\N".join(line for line in kept if visible(line)))
 
 
 def sweep_empty(text: str) -> str:
