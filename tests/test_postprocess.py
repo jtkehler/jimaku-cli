@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import os
 from pathlib import Path
 
 import pysubs2
@@ -13,6 +14,7 @@ from jimaku_cli.strip_ih import (
     strip_html_ruby,
     strip_ih,
     strip_parenthesised,
+    temporary_path,
     tidy_lines,
 )
 
@@ -552,3 +554,64 @@ def test_strip_ih_preserves_a_big_endian_byte_order_mark(tmp_path: Path) -> None
     raw = subtitle.read_bytes()
     assert raw.startswith(codecs.BOM_UTF16_BE)
     assert raw[len(codecs.BOM_UTF16_BE) :].decode("utf-16-be").endswith("おはよう\n")
+
+
+def test_strip_ih_keeps_a_cue_whose_dialogue_quotes_two_timecodes(
+    tmp_path: Path,
+) -> None:
+    """Two times without an arrow are dialogue, not the frame of a new cue.
+
+    Read as a frame, the quoted line opens a block whose only text is the sound
+    effect below it -- so stripping the effect empties the block and deletes the
+    dialogue with it. Asserted on the bytes, because pysubs2 frames SRT the same
+    way and would misread the result.
+    """
+    quoted = "開始は 00:01:02,300 で\u3000終了は 00:02:03,400 だ"
+    subtitle = tmp_path / "quoted.srt"
+    write_srt(subtitle, [f"{quoted}\n（ドアが開く音）", "（信子）おはよう"])
+
+    strip_ih(subtitle)
+
+    assert subtitle.read_bytes().decode("utf-8") == (
+        f"1\n00:00:01,000 --> 00:00:01,900\n{quoted}\n"
+        "\n"
+        "2\n00:00:02,000 --> 00:00:02,900\nおはよう\n"
+    )
+
+
+def test_strip_ih_leaves_a_subrip_drawing_alone(tmp_path: Path) -> None:
+    """A `{\\p1}` drawing is not text in SRT any more than it is in SubStation."""
+    drawing = r"{\p1}（ドアが開く音）{\p0}"
+    subtitle = tmp_path / "drawing.srt"
+    write_srt(subtitle, [drawing, "（信子）おはよう"])
+
+    strip_ih(subtitle)
+
+    assert subtitle.read_bytes().decode("utf-8") == (
+        f"1\n00:00:01,000 --> 00:00:01,900\n{drawing}\n"
+        "\n"
+        "2\n00:00:02,000 --> 00:00:02,900\nおはよう\n"
+    )
+
+
+def test_strip_ih_writes_a_name_that_leaves_no_room_for_the_marker(
+    tmp_path: Path,
+) -> None:
+    """A 250-byte name plus `.stripih` overruns NAME_MAX, so the stem gives way."""
+    subtitle = tmp_path / ("あ" * 82 + ".srt")
+    assert len(subtitle.name.encode()) == 250
+    write_srt(subtitle, ["（信子）おはよう"])
+
+    strip_ih(subtitle)
+
+    assert load_texts(subtitle) == ["おはよう"]
+
+
+@pytest.mark.parametrize("marker", [".stripih", ".ffsubsync"])
+def test_temporary_path_is_a_creatable_sibling(marker: str) -> None:
+    subtitle = Path("dir") / ("あ" * 82 + ".srt")
+    temporary = temporary_path(subtitle, marker)
+
+    assert temporary.parent == subtitle.parent
+    assert temporary.name.endswith(marker + ".srt")
+    assert len(os.fsencode(temporary.name)) <= 255

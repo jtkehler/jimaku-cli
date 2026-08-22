@@ -62,9 +62,10 @@ FILE_LINE = re.compile(r"[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+")
 # A SubStation event line, up to the colon that ends its keyword.
 EVENT_LINE = re.compile(r"[ \t]*(Dialogue|Comment)[ \t]*:", re.IGNORECASE)
 
-# An SRT cue is framed on its timestamp line -- two times on one line -- and
-# the ordinal above it is decoration. Framing on the times is what pysubs2 did,
-# and it is what lets a blank line sit inside a cue without ending it.
+# An SRT cue is framed on its timing line -- two times joined by an arrow --
+# and the ordinal above it is decoration. Framing on the times is what lets a
+# blank line sit inside a cue without ending it; `timing_line` says why the
+# arrow has to be there as well.
 CUE_NUMBER = re.compile(r"([ \t]*)(\d+)([ \t]*(?:\r\n|\n|\r)?)")
 TIMESTAMP = re.compile(r"\d{1,2}:\d{1,2}:\d{1,2}[.,]\d{1,3}")
 
@@ -367,12 +368,28 @@ def strip_ih(subtitle: Path) -> None:
     if payload == text:
         return
 
-    stripped_file = subtitle.with_suffix(".stripih" + subtitle.suffix)
+    stripped_file = temporary_path(subtitle, ".stripih")
     try:
         stripped_file.write_bytes(bom + payload.encode(encoding))
         os.replace(stripped_file, subtitle)
     finally:
         stripped_file.unlink(missing_ok=True)
+
+
+# A temporary name has to fit the filesystem's limit -- 255 bytes on Linux --
+# and one subtitle in the sample corpus is already 249 of them. The marker is
+# what makes the name unique, and `os.replace` needs the file it renames to be
+# a sibling, so the stem is what gives way.
+NAME_MAX = 255
+
+
+def temporary_path(subtitle: Path, marker: str) -> Path:
+    """A sibling path for a rewritten file, short enough to create."""
+    tail = marker + subtitle.suffix
+    stem = subtitle.stem
+    while stem and len(os.fsencode(stem + tail)) > NAME_MAX:
+        stem = stem[:-1]
+    return subtitle.with_name(stem + tail)
 
 
 # Widest first: a UTF-32 LE mark opens with a UTF-16 LE one. The codecs name a
@@ -472,20 +489,30 @@ def substation_cue(line: str, text_index: int) -> Cue | None:
     )
 
 
+def timing_line(line: str) -> bool:
+    """Whether a line frames an SRT cue: two times joined by an arrow.
+
+    pysubs2 counted the times alone, which reads a dialogue line quoting two
+    timecodes as a cue boundary -- splitting the cue, and taking the real line
+    with the block it opens. The arrow has to sit between the two times rather
+    than merely somewhere on the line, and each time is matched loosely, so a
+    rip writing a three-digit hour still frames its cue.
+    """
+    times = list(TIMESTAMP.finditer(line))
+    return len(times) == 2 and "-->" in line[times[0].end() : times[1].start()]
+
+
 def read_subrip(text: str) -> Document:
     """Carve the text out of every cue in an SRT file.
 
-    A cue runs from its timestamp line to the ordinal of the next one, so a
-    blank line inside a cue stays part of it instead of ending it -- the text
-    after such a break is dialogue the strip has to see, and a file that
-    numbers its cues badly or not at all still parses. The timestamp line is
-    copied whole, which keeps the `X1:...Y2:` coordinates some rips write
-    after the times.
+    A cue runs from its timing line to the ordinal of the next one, so a blank
+    line inside a cue stays part of it instead of ending it -- the text after
+    such a break is dialogue the strip has to see, and a file that numbers its
+    cues badly or not at all still parses. The timing line is copied whole,
+    which keeps the `X1:...Y2:` coordinates some rips write after the times.
     """
     lines = file_lines(text)
-    stamps = [
-        index for index, line in enumerate(lines) if len(TIMESTAMP.findall(line)) == 2
-    ]
+    stamps = [index for index, line in enumerate(lines) if timing_line(line)]
     # The ordinal above a timestamp opens that cue's block, so it is where the
     # previous cue stops.
     starts = [
@@ -505,13 +532,14 @@ def read_subrip(text: str) -> Document:
             region.pop()
         body = "".join(region)
         terminator = line_terminator(body)
+        field = body[: len(body) - len(terminator)]
         number = CUE_NUMBER.fullmatch(lines[start]) if start < stamp else None
 
         literals.append("".join(lines[previous:start]))
         cues.append(
             Cue(
-                text=body[: len(body) - len(terminator)],
-                editable=True,
+                text=field,
+                editable=not is_drawing(field),
                 prefix=lines[stamp],
                 suffix=terminator + "".join(lines[stamp + 1 + len(region) : end]),
                 number=number.groups() if number else None,
@@ -846,4 +874,3 @@ def music_marker_only(text: str) -> bool:
         char.isspace() or char in MUSIC_NOTES or char in MUSIC_PADDING
         for char in plain
     )
-

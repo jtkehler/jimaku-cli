@@ -215,23 +215,29 @@ would strand a spanning tag, its markup is carried to the surviving text, so
 **The strip only ever changes cue text, so only cue text is ever rewritten.** The file is edited
 around its text fields rather than parsed into a model and reserialized, which makes the guarantee
 structural: a subtitle with nothing to strip is byte-for-byte untouched, and in a subtitle that did
-change, every byte outside a changed cue's text field is too — timestamps, line endings, the
+change, every byte outside a surviving cue's text field is too — timestamps, line endings, the
 byte-order mark, headers, `[Aegisub Extradata]`, SRT coordinate fields and indentation are
-identical because nothing rewrites them. Reserializing cost all of these: timestamps past ten hours
-and negative ones were clamped, CRLF and ideographic indentation were dropped, and a cue's `\n`
-became `\N`. SRT ordinals are the single deliberate exception — a cue dropped from the middle would
-leave a gap that trips strict parsers, so surviving blocks are renumbered, and only when a cue was
-actually dropped.
+identical because nothing rewrites them. A cue the strip empties is what leaves whole: it takes its
+own block with it, timestamps and all, because a cue with nothing left to say is not a cue.
+Reserializing cost all of these: timestamps past ten hours and negative ones were clamped, CRLF and
+ideographic indentation were dropped, and a cue's `\n` became `\N`. SRT ordinals are the single
+deliberate exception — a cue dropped from the middle would leave a gap that trips strict parsers, so
+surviving blocks are renumbered, and only when a cue was actually dropped.
 
 Finding the text field is per format. A SubStation event's is located by the index of `Text` in the
 file's own `Format:` line rather than a fixed offset; it is last in both variants the corpus
-carries, so the field runs to the end of the line. An SRT cue is framed on its timestamp line, not
-on blank lines, so a blank line inside a cue does not end it and a file that numbers its cues badly
-or not at all still parses; the ordinal above the timestamp opens the block. `Comment:` lines and
-`{\p1}` drawings are not text and are never edited. A byte-order mark is written back as the bytes
-it arrived as, and its codec names an endianness, because Python's bare `utf-16` and `utf-32`
-encoders always write little endian and would silently flip a big-endian file. WebVTT and the
-binary `.sub` have no reader here and are left alone; WebVTT is deliberately so, because the cue
+carries, so the field runs to the end of the line. An `[Events]` section carrying no `Format:` line
+of its own, or one that names no `Text` field, leaves nothing to locate, and that file is left alone
+rather than read against an assumed order — pysubs2 ignored the declaration and assumed one always.
+An SRT cue is framed on its timing line — two times joined by an arrow — not on blank lines, so a
+blank line inside a cue does not end it and a file that numbers its cues badly or not at all still
+parses; the ordinal above the timing line opens the block. The arrow is part of the frame because
+the times alone are not: a line of dialogue that quotes two timecodes would otherwise split the cue
+and take the quoted line with the block it opened. `Comment:` lines and `{\p1}` drawings are not
+text and are never edited. A byte-order mark is written back as the bytes it arrived as, and its
+codec names an endianness, because Python's bare `utf-16` and `utf-32` encoders always write little
+endian and would silently flip a big-endian file. WebVTT and `.sub` have no reader here and are
+left alone, `.sub` whatever flavour it turns out to be; WebVTT is deliberately so, because the cue
 identifiers and settings it carries have nowhere to live in this model.
 
 ## Logging and exit status
