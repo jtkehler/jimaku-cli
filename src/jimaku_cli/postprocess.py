@@ -4,7 +4,7 @@ from pathlib import Path
 import ffsubsync
 from ffsubsync.ffsubsync import make_parser
 
-from .strip_ih import strip_ih
+from .strip_ih import strip_ih, temporary_path
 
 
 class AlignError(Exception):
@@ -16,7 +16,7 @@ def sync_subtitle(subtitle: Path, video: Path) -> None:
 
     Replaces original subtitle on successful align.
     """
-    synced = subtitle.with_suffix(".ffsubsync" + subtitle.suffix)
+    synced = temporary_path(subtitle, ".ffsubsync")
     args = make_parser().parse_args(
         [str(video), "-i", str(subtitle), "-o", str(synced)]
     )
