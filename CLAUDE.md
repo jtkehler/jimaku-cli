@@ -136,7 +136,11 @@ already there. Changing `--release` should not silently re-download a directory;
 the way to force it. `v2` re-releases are invisible to this check — accepted for now.
 
 **Downloads are atomic.** A run killed partway through must not leave a truncated subtitle behind,
-since a truncated file counts as an existing subtitle and would be skipped forever after.
+since a truncated file counts as an existing subtitle and would be skipped forever after. A
+post-processing rewrite is atomic on the same terms, and renames from a temporary unique to the call
+rather than to the file, so two runs over one directory cannot cross their outputs — a name long
+enough to be truncated to fit the filesystem otherwise loses exactly the tail that told it from its
+neighbour.
 
 **One bad file must not abort the batch.** Network, API, and filesystem failures are handled per
 video: report, count it, continue to the next. Post-processing failure likewise must not fail the
@@ -231,9 +235,12 @@ of its own, or one that names no `Text` field, leaves nothing to locate, and tha
 rather than read against an assumed order — pysubs2 ignored the declaration and assumed one always.
 An SRT cue is framed on its timing line — two times joined by an arrow — not on blank lines, so a
 blank line inside a cue does not end it and a file that numbers its cues badly or not at all still
-parses; the ordinal above the timing line opens the block. The arrow is part of the frame because
-the times alone are not: a line of dialogue that quotes two timecodes would otherwise split the cue
-and take the quoted line with the block it opened. `Comment:` lines and `{\p1}` drawings are not
+parses; the ordinal above the timing line opens the block. The pair has to be the whole line,
+because neither half of it is proof on its own: a line of dialogue that quotes two timecodes would
+otherwise split the cue and take the quoted line with the block it opened, and a line can quote the
+arrow between them as readily as the times. The time fields themselves are matched at any width,
+since corpus rips write a four-digit hour and a five-digit fraction and bounding either would
+unframe every cue in those files. `Comment:` lines and `{\p1}` drawings are not
 text and are never edited. A byte-order mark is written back as the bytes it arrived as, and its
 codec names an endianness, because Python's bare `utf-16` and `utf-32` encoders always write little
 endian and would silently flip a big-endian file. WebVTT and `.sub` have no reader here and are

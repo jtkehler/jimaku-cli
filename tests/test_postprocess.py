@@ -594,6 +594,44 @@ def test_strip_ih_leaves_a_subrip_drawing_alone(tmp_path: Path) -> None:
     )
 
 
+def test_strip_ih_keeps_a_cue_whose_dialogue_quotes_a_timecode_range(
+    tmp_path: Path,
+) -> None:
+    """A quoted range is dialogue however complete it looks.
+
+    Requiring the arrow between the times was not enough on its own, because a
+    line can quote the arrow as readily as the times. Read as a frame, the
+    quoted line opens a block whose only text is the sound effect below it, so
+    stripping the effect empties the block and takes the dialogue with it.
+    """
+    quoted = "開始は 00:01:02,300 --> 00:02:03,400 だ"
+    subtitle = tmp_path / "range.srt"
+    write_srt(subtitle, [f"{quoted}\n（ドアが開く音）", "（信子）おはよう"])
+
+    strip_ih(subtitle)
+
+    assert subtitle.read_bytes().decode("utf-8") == (
+        f"1\n00:00:01,000 --> 00:00:01,900\n{quoted}\n"
+        "\n"
+        "2\n00:00:02,000 --> 00:00:02,900\nおはよう\n"
+    )
+
+
+def test_strip_ih_frames_a_cue_written_with_wide_time_fields(tmp_path: Path) -> None:
+    """Six corpus files write a four-digit hour and a five-digit fraction.
+
+    Anchoring the timing line must not also bound its fields: a pattern that
+    capped them would unframe every cue in exactly those files.
+    """
+    times = "0001:02:03,45678 --> 0001:02:04,45678"
+    subtitle = tmp_path / "wide.srt"
+    subtitle.write_bytes(f"1\n{times}\n（信子）おはよう\n".encode())
+
+    strip_ih(subtitle)
+
+    assert subtitle.read_bytes().decode("utf-8") == f"1\n{times}\nおはよう\n"
+
+
 def test_strip_ih_writes_a_name_that_leaves_no_room_for_the_marker(
     tmp_path: Path,
 ) -> None:
@@ -615,3 +653,24 @@ def test_temporary_path_is_a_creatable_sibling(marker: str) -> None:
     assert temporary.parent == subtitle.parent
     assert temporary.name.endswith(marker + ".srt")
     assert len(os.fsencode(temporary.name)) <= 255
+
+
+def test_temporary_path_distinguishes_names_that_truncate() -> None:
+    """Truncation eats the tail that told two long names apart; the token does not.
+
+    `--all --rename` writes that shape: a sidecar is `stem.release.ja`, so the
+    only parts that differ are the last ones to survive a long stem.
+    """
+    stem = "あ" * 82
+    first = temporary_path(Path("dir") / f"{stem}A.srt", ".stripih")
+    second = temporary_path(Path("dir") / f"{stem}B.srt", ".stripih")
+
+    assert first != second
+    assert all(len(os.fsencode(path.name)) <= 255 for path in (first, second))
+
+
+def test_temporary_path_is_unique_per_call() -> None:
+    """Two runs over one directory must not rename from the same file."""
+    subtitle = Path("dir") / "episode.srt"
+
+    assert temporary_path(subtitle, ".stripih") != temporary_path(subtitle, ".stripih")
