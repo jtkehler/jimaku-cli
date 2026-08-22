@@ -5,12 +5,17 @@ import os
 import re
 import unicodedata
 from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
-import pysubs2
-from pysubs2 import SSAEvent
-
 __all__ = ["strip_ih"]
+
+# The strip only ever changes cue text, so the file is edited in place around
+# the text fields rather than reserialized. Everything else -- timestamps, line
+# endings, the BOM, headers, `[Aegisub Extradata]`, SRT coordinate fields,
+# indentation -- is copied through as the bytes it arrived as, because it is
+# never rewritten. pysubs2 clamped timestamps past ten hours and negative ones,
+# normalized CRLF and dropped ideographic indentation on the way through.
 
 # Japanese SDH uses fullwidth parentheses for speaker IDs and sound effects, but
 # Netflix also prescribes the same delimiters for whispered or mouthed dialogue.
@@ -31,11 +36,37 @@ VOICE_MARKER = "()"
 # interior monologue, `「」` quotation. One episode in the sample corpus is 101
 # `＜...＞` lines, a third of its script, and stripping them would delete it.
 
-LINE_BREAK = re.compile(r"\\N|\\n|\n")
+# Captures the separator so `tidy_lines` can put back the break it found: SRT
+# writes real newlines and SubStation writes `\N`, and a cue rejoined with the
+# wrong one is a cue with a literal `\N` in its text or a broken block. `\r\n`
+# is one break and has to match as one, or dropping the line before it strands
+# a carriage return in the middle of the cue.
+LINE_BREAK = re.compile(r"(\\N|\\n|\r\n|\n|\r)")
 
-# pysubs2 hands back SRT's HTML tags as literal text, so the strip has to read
-# them the way it reads an override block: markup, not something the cue says.
-MARKUP = re.compile(SSAEvent.OVERRIDE_SEQUENCE.pattern + r"|</?[a-zA-Z][^>]*>")
+# SRT's HTML tags are markup on the same terms as an override block: neither is
+# something the cue says. The brace pattern is pysubs2's `OVERRIDE_SEQUENCE`.
+OVERRIDE_SEQUENCE = re.compile(r"\{[^}]*\}")
+MARKUP = re.compile(OVERRIDE_SEQUENCE.pattern + r"|</?[a-zA-Z][^>]*>")
+
+# `\p1`..`\p9` inside an override block open a vector drawing, which is not
+# text. pysubs2 reads the scale as a single digit and calls the event a drawing
+# when any fragment of it is scaled above zero; matching that keeps the raw path
+# deciding what is editable exactly as `SSAEvent.is_text` did.
+DRAWING = re.compile(r"\\p[1-9]")
+
+# A file is split on its own terminators rather than with `str.splitlines`,
+# which also breaks on U+2028 and friends -- characters that appear inside cue
+# text and must not be mistaken for the end of a line.
+FILE_LINE = re.compile(r"[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+")
+
+# A SubStation event line, up to the colon that ends its keyword.
+EVENT_LINE = re.compile(r"[ \t]*(Dialogue|Comment)[ \t]*:", re.IGNORECASE)
+
+# An SRT cue is framed on its timestamp line -- two times on one line -- and
+# the ordinal above it is decoration. Framing on the times is what pysubs2 did,
+# and it is what lets a blank line sit inside a cue without ending it.
+CUE_NUMBER = re.compile(r"([ \t]*)(\d+)([ \t]*(?:\r\n|\n|\r)?)")
+TIMESTAMP = re.compile(r"\d{1,2}:\d{1,2}:\d{1,2}[.,]\d{1,3}")
 
 # HTML ruby has useful semantic structure: the base text is dialogue, while
 # <rt> is its reading and <rp> is fallback punctuation around that reading.
@@ -110,6 +141,15 @@ SPEAKER_SUFFIXES = (
     "台湾語",
     "ドイツ語",
 )
+
+# Caption notation that qualifies the line rather than naming its speaker.
+# One corpus instance against 6,733 files, but deleting dialogue is the
+# expensive direction. A minimum length would cost the 37,472 legitimate
+# one-character labels -- given names, and the `２人`/`３人` group labels that
+# sit alongside `（一同）` -- and rejecting a body that also appears mid-line in
+# the same file would cost 11,434 strips, since characters say each other's
+# names. A vocabulary entry is what the rest of this block already is.
+NON_LABELS = frozenset(("仮",))
 
 SOUND_WORDS = ("鈴",)
 
@@ -227,75 +267,260 @@ NAME_MARKERS = re.compile(
 )
 
 
-def strip_ih(subtitle: Path) -> None:
-    """Remove hearing-impaired annotations and furigana from a subtitle.
+@dataclass
+class Cue:
+    """One event, holding its raw text field and the bytes on either side.
 
-    Drops high-confidence speaker labels, sound effects, ruby readings and bare
-    music markers. Ambiguous parenthesised text is dialogue and stays. Replaces
-    supported formats in place; WebVTT is left unchanged.
+    `prefix` and `suffix` are the rest of the event verbatim -- for SubStation
+    the field list up to the last comma and the line terminator, for SRT the
+    timestamp line and the blank line that closes the block -- so rendering an
+    untouched cue reproduces it byte for byte, and dropping one takes its whole
+    block with it.
     """
-    # pysubs2 does not preserve WebVTT cue identifiers or settings. A silent
-    # no-op is safer than corrupting a downloaded subtitle.
-    if subtitle.suffix.casefold() == ".vtt":
+
+    text: str
+    editable: bool
+    prefix: str
+    suffix: str
+    # SRT only: the ordinal line, split so it can be renumbered in place.
+    number: tuple[str, str, str] | None = None
+
+    def render(self, ordinal: int, renumber: bool) -> str:
+        head = self.prefix
+        if self.number is not None:
+            indent, digits, terminator = self.number
+            head = indent + (str(ordinal) if renumber else digits) + terminator + head
+        return head + self.text + self.suffix
+
+
+@dataclass
+class Document:
+    """A subtitle file as literal text with the cue text fields carved out.
+
+    Every byte of the file belongs to exactly one literal or one cue, and
+    `literals` brackets `cues` on both sides, so a document nothing changed
+    renders back to the bytes it was read from.
+    """
+
+    literals: list[str]
+    cues: list[Cue]
+    # SRT numbers its cues, and a gap left by a dropped one trips strict
+    # parsers. The ordinals are rewritten only when a cue actually goes, since
+    # otherwise the original digits are bytes we have no reason to touch.
+    renumbers: bool = False
+
+    def render(self, keep: list[bool]) -> str:
+        renumber = self.renumbers and not all(keep)
+        parts = [self.literals[0]]
+        ordinal = 0
+        for cue, literal, kept in zip(self.cues, self.literals[1:], keep):
+            if kept:
+                ordinal += 1
+                parts.append(cue.render(ordinal, renumber))
+            parts.append(literal)
+        return "".join(parts)
+
+
+def strip_ih(subtitle: Path) -> None:
+    """Remove hearing-impaired annotations and ruby readings from a subtitle.
+
+    Drops high-confidence speaker labels, sound effects, bare music markers,
+    parenthesised kana readings after kanji and HTML ruby. Ambiguous
+    parenthesised text is dialogue and stays. Edits SubStation and SRT in
+    place, rewriting only the text of the cues that changed; every other
+    format is left alone.
+    """
+    readers = {".ass": read_substation, ".ssa": read_substation, ".srt": read_subrip}
+    # WebVTT and the binary `.sub` that `SUBTITLE_EXTS` also admits have no
+    # reader here. A silent no-op is safer than corrupting a downloaded file.
+    read = readers.get(subtitle.suffix.casefold())
+    if read is None:
         return
 
-    # SRT is the only format whose tags pysubs2 rewrites on the way through:
-    # it converts `<i>` to `{\i1}` on load and drops `{...}` on save. The pair
-    # of flags is the best available tag round-trip. Every format takes both as
-    # **kwargs, so no branching is needed.
-    encoding = subtitle_encoding(subtitle)
-    subs = pysubs2.load(subtitle, encoding=encoding, keep_html_tags=True)
+    encoding, bom = subtitle_encoding(subtitle)
+    text = subtitle.read_bytes()[len(bom) :].decode(encoding)
+    document = read(text)
 
-    before = [event.text for event in subs]
     labels = speaker_labels(
-        strip_html_ruby(event.text) for event in subs if event.is_text
+        strip_html_ruby(cue.text) for cue in document.cues if cue.editable
     )
-    changed: set[int] = set()
-    for event in subs:
+    keep: list[bool] = []
+    for cue in document.cues:
         # Comment lines and {\p1} drawings are not dialogue; leave them alone.
-        if event.is_text:
-            original = event.text
-            without_ruby = strip_html_ruby(original)
-            stripped = strip_parenthesised(without_ruby, labels)
-            if music_marker_only(stripped):
-                stripped = ""
-            elif stripped != without_ruby:
-                stripped = tidy_lines(stripped)
-            if stripped != original:
-                event.text = stripped
-            if event.text != original:
-                changed.add(id(event))
-    kept = [
-        event
-        for event in subs
-        if not (event.is_text and id(event) in changed and not is_dialogue(event))
-    ]
+        if not cue.editable:
+            keep.append(True)
+            continue
+        original = cue.text
+        without_ruby = strip_html_ruby(original)
+        stripped = strip_parenthesised(without_ruby, labels)
+        if music_marker_only(stripped):
+            stripped = ""
+        elif stripped != without_ruby:
+            stripped = tidy_lines(stripped)
+        if stripped != original:
+            cue.text = stripped
+        keep.append(cue.text == original or visible(cue.text))
 
-    # Nothing to strip: leave the file alone rather than round-trip it through
-    # pysubs2, which reformats margins and stamps its own header comment.
-    if [event.text for event in kept] == before:
+    payload = document.render(keep)
+    # Nothing to strip: leave the file alone. Not an optimization -- it is what
+    # makes a subtitle with no annotations byte-for-byte untouched.
+    if payload == text:
         return
-    subs.events = kept
 
-    stripped = subtitle.with_suffix(".stripih" + subtitle.suffix)
+    stripped_file = subtitle.with_suffix(".stripih" + subtitle.suffix)
     try:
-        subs.save(stripped, encoding=encoding, keep_ssa_tags=True)
-        os.replace(stripped, subtitle)
+        stripped_file.write_bytes(bom + payload.encode(encoding))
+        os.replace(stripped_file, subtitle)
     finally:
-        stripped.unlink(missing_ok=True)
+        stripped_file.unlink(missing_ok=True)
 
 
-def subtitle_encoding(subtitle: Path) -> str:
-    """Return a BOM-aware encoding without guessing legacy byte encodings."""
+# Widest first: a UTF-32 LE mark opens with a UTF-16 LE one. The codecs name a
+# byte order rather than leaving it to the encoder, which always writes little
+# endian for the bare `utf-16` and `utf-32` names and would silently flip a
+# big-endian file. The mark itself is written back verbatim.
+BYTE_ORDER_MARKS = (
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+    (codecs.BOM_UTF8, "utf-8"),
+)
+
+
+def subtitle_encoding(subtitle: Path) -> tuple[str, bytes]:
+    """Return a codec and the byte-order mark to write back before its output."""
     with subtitle.open("rb") as file:
         prefix = file.read(4)
-    if prefix.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
-        return "utf-32"
-    if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return "utf-16"
-    if prefix.startswith(codecs.BOM_UTF8):
-        return "utf-8-sig"
-    return "utf-8"
+    for bom, encoding in BYTE_ORDER_MARKS:
+        if prefix.startswith(bom):
+            return encoding, bom
+    return "utf-8", b""
+
+
+def file_lines(text: str) -> list[str]:
+    """Split into lines that each keep their own terminator."""
+    return FILE_LINE.findall(text)
+
+
+def line_terminator(line: str) -> str:
+    """The newline a line ends with, if it has one."""
+    for terminator in ("\r\n", "\n", "\r"):
+        if line.endswith(terminator):
+            return terminator
+    return ""
+
+
+def is_drawing(text: str) -> bool:
+    """Whether a SubStation event is a vector drawing rather than text."""
+    return bool(DRAWING.search("".join(OVERRIDE_SEQUENCE.findall(text))))
+
+
+def read_substation(text: str) -> Document:
+    """Carve the Text field out of every event line in an ASS or SSA file.
+
+    `Text` is last in every Format variant the corpus carries, so the field
+    runs from the comma that ends the one before it to the end of the line.
+    The index is read from the file's own Format line rather than assumed.
+    """
+    literals: list[str] = []
+    cues: list[Cue] = []
+    pending: list[str] = []
+    text_index: int | None = None
+    in_events = False
+
+    for line in file_lines(text):
+        cue = None
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_events = stripped.casefold() == "[events]"
+        elif in_events and stripped.casefold().startswith("format:"):
+            fields = [field.strip() for field in stripped.split(":", 1)[1].split(",")]
+            text_index = fields.index("Text") if "Text" in fields else None
+        elif in_events and text_index is not None:
+            cue = substation_cue(line, text_index)
+        if cue is None:
+            pending.append(line)
+            continue
+        literals.append("".join(pending))
+        pending = []
+        cues.append(cue)
+
+    literals.append("".join(pending))
+    return Document(literals, cues)
+
+
+def substation_cue(line: str, text_index: int) -> Cue | None:
+    """One event line split at the comma that opens its Text field."""
+    keyword = EVENT_LINE.match(line)
+    if keyword is None:
+        return None
+    position = keyword.end()
+    for _ in range(text_index):
+        comma = line.find(",", position)
+        # Too few fields to locate Text: malformed, so copy it through whole.
+        if comma < 0:
+            return None
+        position = comma + 1
+    terminator = line_terminator(line)
+    field = line[position : len(line) - len(terminator)]
+    return Cue(
+        text=field,
+        editable=keyword.group(1).casefold() == "dialogue" and not is_drawing(field),
+        prefix=line[:position],
+        suffix=terminator,
+    )
+
+
+def read_subrip(text: str) -> Document:
+    """Carve the text out of every cue in an SRT file.
+
+    A cue runs from its timestamp line to the ordinal of the next one, so a
+    blank line inside a cue stays part of it instead of ending it -- the text
+    after such a break is dialogue the strip has to see, and a file that
+    numbers its cues badly or not at all still parses. The timestamp line is
+    copied whole, which keeps the `X1:...Y2:` coordinates some rips write
+    after the times.
+    """
+    lines = file_lines(text)
+    stamps = [
+        index for index, line in enumerate(lines) if len(TIMESTAMP.findall(line)) == 2
+    ]
+    # The ordinal above a timestamp opens that cue's block, so it is where the
+    # previous cue stops.
+    starts = [
+        stamp - 1 if stamp and CUE_NUMBER.fullmatch(lines[stamp - 1]) else stamp
+        for stamp in stamps
+    ]
+
+    literals: list[str] = []
+    cues: list[Cue] = []
+    previous = 0
+    for position, stamp in enumerate(stamps):
+        start = starts[position]
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        region = lines[stamp + 1 : end]
+        # Trailing blank lines close the block rather than belonging to the cue.
+        while region and not region[-1].strip():
+            region.pop()
+        body = "".join(region)
+        terminator = line_terminator(body)
+        number = CUE_NUMBER.fullmatch(lines[start]) if start < stamp else None
+
+        literals.append("".join(lines[previous:start]))
+        cues.append(
+            Cue(
+                text=body[: len(body) - len(terminator)],
+                editable=True,
+                prefix=lines[stamp],
+                suffix=terminator + "".join(lines[stamp + 1 + len(region) : end]),
+                number=number.groups() if number else None,
+            )
+        )
+        previous = end
+
+    literals.append("".join(lines[previous:]))
+    return Document(literals, cues, renumbers=True)
 
 
 def strip_html_ruby(text: str) -> str:
@@ -452,6 +677,7 @@ def is_leading_label(
         not opening_payload(before)
         and contextual_payload(after)
         and bool(body)
+        and body not in NON_LABELS
         and not looks_spoken(body)
         and not sound_annotation(body)
     )
@@ -565,19 +791,34 @@ def strip_parenthesised(text: str, labels: Collection[str] = ()) -> str:
 
 
 def tidy_lines(text: str) -> str:
-    """Drop emptied lines while carrying their markup onto surviving text."""
-    kept: list[str] = []
+    """Drop emptied lines while carrying their markup onto surviving text.
+
+    Each surviving line is rejoined with the break it originally carried, and a
+    dropped line takes its break with it, so a cue keeps whichever of `\\N`,
+    `\\n` or a real newline it was written with. Only spaces and tabs are
+    trimmed -- the ideographic space a provider indents with is text the strip
+    did not put there, and `visible` judges a line of it empty regardless.
+    """
+    parts = LINE_BREAK.split(text)
+    kept: list[tuple[str, str]] = []
     carry = ""
-    for raw_line in LINE_BREAK.split(text):
-        line = sweep_empty(raw_line.strip())
+    for position in range(0, len(parts), 2):
+        line = sweep_empty(parts[position].strip(" \t"))
+        separator = parts[position + 1] if position + 1 < len(parts) else ""
         if visible(line):
-            kept.append(sweep_empty(carry + line))
+            kept.append((sweep_empty(carry + line), separator))
             carry = ""
         else:
-            carry += line
+            # Only the markup is worth carrying; a dropped line's whitespace
+            # would arrive as a stray space or carriage return on the next one.
+            carry += line.strip()
     if carry and kept:
-        kept[-1] = sweep_empty(kept[-1] + carry)
-    return r"\N".join(kept)
+        line, separator = kept[-1]
+        kept[-1] = (sweep_empty(line + carry), separator)
+    return "".join(
+        line + (separator if position < len(kept) - 1 else "")
+        for position, (line, separator) in enumerate(kept)
+    )
 
 
 def sweep_empty(text: str) -> str:
@@ -606,7 +847,3 @@ def music_marker_only(text: str) -> bool:
         for char in plain
     )
 
-
-def is_dialogue(event: SSAEvent) -> bool:
-    """Whether a cue still renders any payload after a high-confidence strip."""
-    return visible(event.text)

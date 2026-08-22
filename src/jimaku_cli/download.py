@@ -64,7 +64,10 @@ def download(
     strip_ih: Annotated[
         bool,
         typer.Option(
-            help="Remove hearing-impaired annotations and furigana.",
+            help=(
+                "Remove hearing-impaired annotations, and ruby readings written "
+                "as parenthesised kana after kanji or as HTML <ruby>."
+            ),
         ),
     ] = download_config.get("strip_ih", False),
     download_all: Annotated[

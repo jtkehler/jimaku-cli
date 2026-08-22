@@ -29,7 +29,7 @@ left alone. Non-interactive and safe to re-run.
 | `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
 | `--align` | Time-align the subtitle against the video's audio, with ffsubsync. |
-| `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and furigana. |
+| `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as parenthesised kana after kanji or as HTML `<ruby>`. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
 
 ### `jimaku search [DIRECTORY]`
 
@@ -169,6 +169,15 @@ counting its kana is how a label ends up read as speech.
 `君`, `様`, `先生`, `せんせー`, `たち` or `達` is a label however much kana it holds. Bare kana names
 — `（しんのすけ）`, `（はるか）` — are ambiguous by shape and are deliberately still kept.
 
+**Notation that qualifies the line sits where a label sits and is not one.** `（仮）` — "tentative" —
+precedes dialogue exactly as `（信子）` does, so it is named in a small vocabulary of non-labels
+beside the sound and source wording. One corpus instance against 6,733 files, but deleting dialogue
+is the expensive direction. Two structural rules were measured instead and both cost more than they
+saved: a minimum length would reject 37,472 legitimate one-character labels — given names, and the
+`２人` / `３人` group labels that sit alongside `（一同）` — and rejecting a body that also appears
+mid-line in the same file would cost 11,434 strips across 548 bodies, the top conflicts being plain
+character names, because characters say each other's names.
+
 The line is who made the mess. Annotation goes, and so does empty markup removing it leaves — an
 `<i></i>` with nothing between its halves once `<i>（ドアが開く音）</i>` is gone is not something
 the cue ever asked for. Punctuation and formatting the strip did not create stay: an unmatched or
@@ -201,10 +210,29 @@ punctuation and ALL-CAPS text stay. Override blocks are opaque — counting the 
 `{\pos(320,240)}` would corrupt it — and comment lines and drawings are left alone. SRT's `<i>` and
 its kin are markup on the same terms. Only a cue whose content changed is tidied; if removing a line
 would strand a spanning tag, its markup is carried to the surviving text, so
-`<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`. A subtitle with nothing to strip is left
-byte-for-byte untouched. Once any cue changes, pysubs2 still serializes the format as a whole, so
-do not promise byte identity for other cues in that file. WebVTT is deliberately left untouched
-because pysubs2 does not preserve its cue identifiers and settings.
+`<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`.
+
+**The strip only ever changes cue text, so only cue text is ever rewritten.** The file is edited
+around its text fields rather than parsed into a model and reserialized, which makes the guarantee
+structural: a subtitle with nothing to strip is byte-for-byte untouched, and in a subtitle that did
+change, every byte outside a changed cue's text field is too — timestamps, line endings, the
+byte-order mark, headers, `[Aegisub Extradata]`, SRT coordinate fields and indentation are
+identical because nothing rewrites them. Reserializing cost all of these: timestamps past ten hours
+and negative ones were clamped, CRLF and ideographic indentation were dropped, and a cue's `\n`
+became `\N`. SRT ordinals are the single deliberate exception — a cue dropped from the middle would
+leave a gap that trips strict parsers, so surviving blocks are renumbered, and only when a cue was
+actually dropped.
+
+Finding the text field is per format. A SubStation event's is located by the index of `Text` in the
+file's own `Format:` line rather than a fixed offset; it is last in both variants the corpus
+carries, so the field runs to the end of the line. An SRT cue is framed on its timestamp line, not
+on blank lines, so a blank line inside a cue does not end it and a file that numbers its cues badly
+or not at all still parses; the ordinal above the timestamp opens the block. `Comment:` lines and
+`{\p1}` drawings are not text and are never edited. A byte-order mark is written back as the bytes
+it arrived as, and its codec names an endianness, because Python's bare `utf-16` and `utf-32`
+encoders always write little endian and would silently flip a big-endian file. WebVTT and the
+binary `.sub` have no reader here and are left alone; WebVTT is deliberately so, because the cue
+identifiers and settings it carries have nowhere to live in this model.
 
 ## Logging and exit status
 
