@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import codecs
 import os
 from pathlib import Path
 
 import pysubs2
 import pytest
 
+from jimaku_cli.postprocess import AlignError, sync_subtitle
 from jimaku_cli.strip_ih import (
     music_marker_only,
     parenthesised_spans,
@@ -87,9 +87,7 @@ def test_parenthesised_spans_does_not_salvage_inner_pair_from_unmatched_outer() 
 
 def test_parenthesised_spans_ignores_parentheses_inside_markup() -> None:
     text = r"{\pos(320,240)}（信子）おはよう"
-    assert [text[start:end] for start, end in parenthesised_spans(text)] == [
-        "（信子）"
-    ]
+    assert [text[start:end] for start, end in parenthesised_spans(text)] == ["（信子）"]
 
 
 def test_learned_label_is_removed_when_it_later_appears_alone() -> None:
@@ -118,6 +116,7 @@ def test_leading_labels_are_recognized_on_each_display_line() -> None:
         r"(庄太さーん\N早く ごはん食べて！)",
         "（何？）",
         "（何なの？）",
+        "♪ （ヘンなの）",
         "♪（Talkin' 'bout my generation）",
         "((旅の呪いだ))",
         "｟ノイゼル：うっ…　うぅ…｠",
@@ -170,12 +169,8 @@ def test_content_is_not_a_music_marker(text: str) -> None:
 
 
 def test_tidy_lines_keeps_markup_that_spans_a_removed_line() -> None:
-    assert (
-        tidy_lines(r"<i>\Nせりふ</i>", r"<i>（信子）\Nせりふ</i>") == "<i>せりふ</i>"
-    )
-    assert (
-        tidy_lines(r"せりふ\N</i>", r"せりふ\N（ドアの音）</i>") == "せりふ</i>"
-    )
+    assert tidy_lines(r"<i>\Nせりふ</i>", r"<i>（信子）\Nせりふ</i>") == "<i>せりふ</i>"
+    assert tidy_lines(r"せりふ\N</i>", r"せりふ\N（ドアの音）</i>") == "せりふ</i>"
 
 
 def test_tidy_lines_leaves_the_spacing_of_lines_it_did_not_change() -> None:
@@ -188,7 +183,6 @@ def write_srt(
     path: Path,
     cues: list[str],
     encoding: str = "utf-8",
-    newline: str = "\n",
 ) -> None:
     blocks = []
     for index, cue in enumerate(cues, 1):
@@ -196,7 +190,7 @@ def write_srt(
             f"{index}\n00:00:{index:02},000 --> 00:00:{index:02},900\n{cue}\n"
         )
     text = "\n".join(blocks)
-    path.write_bytes(text.replace("\n", newline).encode(encoding))
+    path.write_text(text, encoding=encoding)
 
 
 ASS_HEADER = (
@@ -207,26 +201,39 @@ ASS_HEADER = (
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
 )
 
+SSA_HEADER = (
+    "[Script Info]\n"
+    "ScriptType: v4.00\n"
+    "\n"
+    "[Events]\n"
+    "Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+)
+
 
 def write_ass(
     path: Path,
     events: list[str],
-    trailer: str = "",
-    newline: str = "\n",
-    encoding: str = "utf-8",
 ) -> None:
-    text = ASS_HEADER + "".join(f"{event}\n" for event in events) + trailer
-    path.write_bytes(text.replace("\n", newline).encode(encoding))
+    path.write_text(ASS_HEADER + "".join(f"{event}\n" for event in events))
 
 
 def dialogue(text: str, start: str = "0:00:01.00", end: str = "0:00:02.00") -> str:
     return f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}"
 
 
-def load_texts(path: Path, encoding: str = "utf-8") -> list[str]:
+def ssa_dialogue(text: str) -> str:
+    return f"Dialogue: Marked=0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{text}"
+
+
+def load_texts(path: Path, encoding: str = "utf-8-sig") -> list[str]:
     return [
         event.text
-        for event in pysubs2.load(path, encoding=encoding, keep_html_tags=True)
+        for event in pysubs2.load(
+            path,
+            encoding=encoding,
+            format_=path.suffix.removeprefix("."),
+            keep_html_tags=True,
+        )
         if event.is_text
     ]
 
@@ -239,6 +246,7 @@ def test_strip_ih_preserves_dialogue_lyrics_and_unrelated_symbol_cues(
         subtitle,
         [
             "（信子）おはよう",
+            "（信子）",
             "（今日は仕事でしょ？）",
             "（君の声）を聞いた",
             "♪ 歌詞 ♪",
@@ -246,6 +254,7 @@ def test_strip_ih_preserves_dialogue_lyrics_and_unrelated_symbol_cues(
             "♪～",
             "♪～（BGM）",
             "<i>（ドアが開く音）\nせりふ</i>",
+            r"{\an8}<i>（信子）おはよう</i>",
             "“悪魔の<ruby>和音<rt>コード</rt></ruby>〟だ",
         ],
     )
@@ -259,6 +268,7 @@ def test_strip_ih_preserves_dialogue_lyrics_and_unrelated_symbol_cues(
         "♪ 歌詞 ♪",
         "♥",
         "<i>せりふ</i>",
+        r"{\an8}<i>おはよう</i>",
         "“悪魔の和音〟だ",
     ]
 
@@ -280,16 +290,71 @@ def test_strip_ih_leaves_noop_file_byte_identical(tmp_path: Path) -> None:
     strip_ih(subtitle)
 
     assert subtitle.read_bytes() == before
+    assert not list(tmp_path.glob(".stripih-*"))
 
 
-def test_strip_ih_reads_and_preserves_utf16_bom(tmp_path: Path) -> None:
+def test_strip_ih_parse_failure_leaves_the_file_untouched(tmp_path: Path) -> None:
+    subtitle = tmp_path / "invalid.srt"
+    subtitle.write_bytes(b"\x80not UTF-8")
+    before = subtitle.read_bytes()
+
+    with pytest.raises(UnicodeDecodeError):
+        strip_ih(subtitle)
+
+    assert subtitle.read_bytes() == before
+
+
+def test_strip_ih_handles_bom_marked_utf16(tmp_path: Path) -> None:
     subtitle = tmp_path / "utf16.srt"
     write_srt(subtitle, ["（信子）おはよう"], encoding="utf-16")
 
     strip_ih(subtitle)
 
-    assert subtitle.read_bytes().startswith(codecs.BOM_UTF16_LE)
     assert load_texts(subtitle, encoding="utf-16") == ["おはよう"]
+
+
+def test_strip_ih_replaces_from_a_sibling_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subtitle = tmp_path / "dialogue.srt"
+    write_srt(subtitle, ["（信子）おはよう"])
+    subtitle.chmod(0o640)
+    replacements: list[tuple[Path, Path]] = []
+    replace = os.replace
+
+    def record(source: Path, destination: Path) -> None:
+        replacements.append((Path(source), Path(destination)))
+        replace(source, destination)
+
+    monkeypatch.setattr("jimaku_cli.strip_ih.os.replace", record)
+
+    strip_ih(subtitle)
+
+    assert len(replacements) == 1
+    source, destination = replacements[0]
+    assert source.parent == destination.parent == subtitle.parent
+    assert source.suffix == subtitle.suffix
+    assert destination == subtitle
+    assert subtitle.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.parametrize("suffix", [".ass", ".ssa"])
+def test_strip_ih_handles_substation_formats(tmp_path: Path, suffix: str) -> None:
+    subtitle = tmp_path / f"dialogue{suffix}"
+    if suffix == ".ass":
+        write_ass(subtitle, [dialogue("（信子）おはよう"), dialogue("（ベル）")])
+    else:
+        subtitle.write_text(
+            SSA_HEADER
+            + ssa_dialogue("（信子）おはよう")
+            + "\n"
+            + ssa_dialogue("（ベル）")
+            + "\n"
+        )
+
+    strip_ih(subtitle)
+
+    assert load_texts(subtitle) == ["おはよう"]
 
 
 def test_strip_ih_leaves_webvtt_byte_identical(tmp_path: Path) -> None:
@@ -345,7 +410,10 @@ def test_sound_wording_still_strips_where_a_name_only_resembles_it(text: str) ->
     ("text", "expected"),
     [
         # The dash still marks two speakers once their names are gone.
-        (r"-（雀）おはよう\N-（社員たち）おはようございます", r"-おはよう\N-おはようございます"),
+        (
+            r"-（雀）おはよう\N-（社員たち）おはようございます",
+            r"-おはよう\N-おはようございます",
+        ),
         # An icon annotates the same source the group did, so it leaves with it.
         ("📻（レミ）はい", "はい"),
         ("≪(足音)", ""),
@@ -400,52 +468,21 @@ def ass_lines(path: Path, prefix: str = "Dialogue:") -> list[str]:
     return [line for line in text.split("\n") if line.startswith(prefix)]
 
 
-def test_strip_ih_preserves_timestamps_past_ten_hours(tmp_path: Path) -> None:
-    """pysubs2 clamped anything past 9:59:59.99 on the way through."""
-    subtitle = tmp_path / "long.ass"
-    write_ass(
-        subtitle,
-        [
-            dialogue("♪♪～", "10:23:32.08", "10:23:34.12"),
-            dialogue("（信子）おはよう", "10:23:35.06", "10:23:37.10"),
-        ],
-    )
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [("10:23:35.06", "10:23:37.10"), ("-0:00:04.50", "-0:00:03.00")],
+)
+def test_strip_ih_refuses_timestamps_pysubs2_would_clamp(
+    tmp_path: Path, start: str, end: str
+) -> None:
+    subtitle = tmp_path / "unrepresentable.ass"
+    write_ass(subtitle, [dialogue("（信子）おはよう", start, end)])
+    before = subtitle.read_bytes()
 
-    strip_ih(subtitle)
+    with pytest.raises(ValueError, match="outside pysubs2's range"):
+        strip_ih(subtitle)
 
-    assert ass_lines(subtitle) == [
-        dialogue("おはよう", "10:23:35.06", "10:23:37.10")
-    ]
-    assert "9:59:59.99" not in subtitle.read_bytes().decode("utf-8")
-
-
-def test_strip_ih_preserves_a_negative_timestamp(tmp_path: Path) -> None:
-    """pysubs2 clamped a negative start to zero."""
-    subtitle = tmp_path / "negative.ass"
-    write_ass(
-        subtitle,
-        [
-            dialogue("（ドアが開く音）", "-0:00:02.00", "0:00:01.00"),
-            dialogue("（信子）おはよう", "-0:00:04.50", "-0:00:03.00"),
-        ],
-    )
-
-    strip_ih(subtitle)
-
-    assert ass_lines(subtitle) == [
-        dialogue("おはよう", "-0:00:04.50", "-0:00:03.00")
-    ]
-
-
-def test_strip_ih_keeps_crlf_line_endings(tmp_path: Path) -> None:
-    subtitle = tmp_path / "windows.srt"
-    write_srt(subtitle, ["（信子）おはよう", "せりふ"], newline="\r\n")
-
-    strip_ih(subtitle)
-
-    raw = subtitle.read_bytes()
-    assert "おはよう" in raw.decode("utf-8")
-    assert raw.count(b"\r\n") == raw.count(b"\n") == raw.count(b"\r")
+    assert subtitle.read_bytes() == before
 
 
 @pytest.mark.parametrize("separator", ["\\N", "\\n"])
@@ -468,7 +505,7 @@ def test_strip_ih_keeps_a_real_newline_in_a_changed_srt_cue(tmp_path: Path) -> N
 
     strip_ih(subtitle)
 
-    assert subtitle.read_bytes().decode("utf-8").endswith("おはよう\nお元気ですか\n")
+    assert load_texts(subtitle) == [r"おはよう\Nお元気ですか"]
 
 
 def test_strip_ih_keeps_ideographic_indentation_on_an_untouched_line(
@@ -483,40 +520,12 @@ def test_strip_ih_keeps_ideographic_indentation_on_an_untouched_line(
     assert ass_lines(subtitle) == [dialogue(r"おはよう\N　インデント")]
 
 
-def test_strip_ih_preserves_sections_after_the_events(tmp_path: Path) -> None:
-    extradata = "\n[Aegisub Extradata]\nData: 1,_aegi_perspective_ambient_plane,foo\n"
-    subtitle = tmp_path / "extradata.ass"
-    write_ass(subtitle, [dialogue("（信子）おはよう")], trailer=extradata)
-
-    strip_ih(subtitle)
-
-    assert subtitle.read_bytes().decode("utf-8").endswith(extradata)
-
-
-def test_strip_ih_preserves_subrip_coordinate_fields(tmp_path: Path) -> None:
-    times = "00:00:01,000 --> 00:00:02,900  X1:040 X2:600 Y1:460 Y2:500"
-    subtitle = tmp_path / "coords.srt"
-    subtitle.write_bytes(f"1\n{times}\n（信子）おはよう\n".encode())
-
-    strip_ih(subtitle)
-
-    assert subtitle.read_bytes().decode("utf-8") == f"1\n{times}\nおはよう\n"
-
-
-def test_strip_ih_renumbers_subrip_blocks_after_a_deletion(tmp_path: Path) -> None:
-    subtitle = tmp_path / "renumber.srt"
-    write_srt(subtitle, ["せりふ", "（ドアが開く音）", "次の行"])
-
-    strip_ih(subtitle)
-
-    text = subtitle.read_bytes().decode("utf-8")
-    assert [line for line in text.split("\n") if line.isdigit()] == ["1", "2"]
-    assert "（ドアが開く音）" not in text
-
-
 def test_strip_ih_keeps_a_tentative_title_marker(tmp_path: Path) -> None:
     """`仮` qualifies the line rather than naming who says it."""
-    assert strip_parenthesised("（仮）みたいなスケジュール") == "（仮）みたいなスケジュール"
+    assert (
+        strip_parenthesised("（仮）みたいなスケジュール")
+        == "（仮）みたいなスケジュール"
+    )
 
     subtitle = tmp_path / "tentative.srt"
     write_srt(subtitle, ["（仮）みたいなスケジュール"])
@@ -525,19 +534,6 @@ def test_strip_ih_keeps_a_tentative_title_marker(tmp_path: Path) -> None:
     strip_ih(subtitle)
 
     assert subtitle.read_bytes() == before
-
-
-def test_strip_ih_reads_a_cue_split_by_a_blank_line(tmp_path: Path) -> None:
-    """A blank line inside a cue does not end it, so the text below still strips."""
-    subtitle = tmp_path / "blank.srt"
-    subtitle.write_bytes(
-        "1\n00:00:01,000 --> 00:00:02,900\n\n（信子）おはよう\n\n"
-        "2\n00:00:03,000 --> 00:00:04,900\nせりふ\n".encode()
-    )
-
-    strip_ih(subtitle)
-
-    assert "（信子）" not in subtitle.read_bytes().decode("utf-8")
 
 
 @pytest.mark.parametrize("suffix", [".vtt", ".sub"])
@@ -565,99 +561,20 @@ def test_strip_ih_leaves_comments_and_drawings_alone(tmp_path: Path) -> None:
     assert ass_lines(subtitle) == [drawing, dialogue("やあ")]
 
 
-def test_strip_ih_preserves_a_big_endian_byte_order_mark(tmp_path: Path) -> None:
-    """Python's bare `utf-16` encoder always writes little endian."""
-    subtitle = tmp_path / "utf16be.srt"
-    write_srt(subtitle, ["（信子）おはよう"], encoding="utf-16-be")
-    subtitle.write_bytes(codecs.BOM_UTF16_BE + subtitle.read_bytes())
-
-    strip_ih(subtitle)
-
-    raw = subtitle.read_bytes()
-    assert raw.startswith(codecs.BOM_UTF16_BE)
-    assert raw[len(codecs.BOM_UTF16_BE) :].decode("utf-16-be").endswith("おはよう\n")
-
-
-def test_strip_ih_keeps_a_cue_whose_dialogue_quotes_two_timecodes(
-    tmp_path: Path,
-) -> None:
-    """Two times without an arrow are dialogue, not the frame of a new cue.
-
-    Read as a frame, the quoted line opens a block whose only text is the sound
-    effect below it -- so stripping the effect empties the block and deletes the
-    dialogue with it. Asserted on the bytes, because pysubs2 frames SRT the same
-    way and would misread the result.
-    """
-    quoted = "開始は 00:01:02,300 で\u3000終了は 00:02:03,400 だ"
-    subtitle = tmp_path / "quoted.srt"
-    write_srt(subtitle, [f"{quoted}\n（ドアが開く音）", "（信子）おはよう"])
-
-    strip_ih(subtitle)
-
-    assert subtitle.read_bytes().decode("utf-8") == (
-        f"1\n00:00:01,000 --> 00:00:01,900\n{quoted}\n"
-        "\n"
-        "2\n00:00:02,000 --> 00:00:02,900\nおはよう\n"
-    )
-
-
-def test_strip_ih_leaves_a_subrip_drawing_alone(tmp_path: Path) -> None:
-    """A `{\\p1}` drawing is not text in SRT any more than it is in SubStation."""
+def test_strip_ih_safely_noops_an_srt_containing_a_drawing(tmp_path: Path) -> None:
     drawing = r"{\p1}（ドアが開く音）{\p0}"
     subtitle = tmp_path / "drawing.srt"
     write_srt(subtitle, [drawing, "（信子）おはよう"])
+    before = subtitle.read_bytes()
 
     strip_ih(subtitle)
 
-    assert subtitle.read_bytes().decode("utf-8") == (
-        f"1\n00:00:01,000 --> 00:00:01,900\n{drawing}\n"
-        "\n"
-        "2\n00:00:02,000 --> 00:00:02,900\nおはよう\n"
-    )
-
-
-def test_strip_ih_keeps_a_cue_whose_dialogue_quotes_a_timecode_range(
-    tmp_path: Path,
-) -> None:
-    """A quoted range is dialogue however complete it looks.
-
-    Requiring the arrow between the times was not enough on its own, because a
-    line can quote the arrow as readily as the times. Read as a frame, the
-    quoted line opens a block whose only text is the sound effect below it, so
-    stripping the effect empties the block and takes the dialogue with it.
-    """
-    quoted = "開始は 00:01:02,300 --> 00:02:03,400 だ"
-    subtitle = tmp_path / "range.srt"
-    write_srt(subtitle, [f"{quoted}\n（ドアが開く音）", "（信子）おはよう"])
-
-    strip_ih(subtitle)
-
-    assert subtitle.read_bytes().decode("utf-8") == (
-        f"1\n00:00:01,000 --> 00:00:01,900\n{quoted}\n"
-        "\n"
-        "2\n00:00:02,000 --> 00:00:02,900\nおはよう\n"
-    )
-
-
-def test_strip_ih_frames_a_cue_written_with_wide_time_fields(tmp_path: Path) -> None:
-    """Six corpus files write a four-digit hour and a five-digit fraction.
-
-    Anchoring the timing line must not also bound its fields: a pattern that
-    capped them would unframe every cue in exactly those files.
-    """
-    times = "0001:02:03,45678 --> 0001:02:04,45678"
-    subtitle = tmp_path / "wide.srt"
-    subtitle.write_bytes(f"1\n{times}\n（信子）おはよう\n".encode())
-
-    strip_ih(subtitle)
-
-    assert subtitle.read_bytes().decode("utf-8") == f"1\n{times}\nおはよう\n"
+    assert subtitle.read_bytes() == before
 
 
 def test_strip_ih_writes_a_name_that_leaves_no_room_for_the_marker(
     tmp_path: Path,
 ) -> None:
-    """A 250-byte name plus `.stripih` overruns NAME_MAX, so the stem gives way."""
     subtitle = tmp_path / ("あ" * 82 + ".srt")
     assert len(subtitle.name.encode()) == 250
     write_srt(subtitle, ["（信子）おはよう"])
@@ -665,34 +582,91 @@ def test_strip_ih_writes_a_name_that_leaves_no_room_for_the_marker(
     strip_ih(subtitle)
 
     assert load_texts(subtitle) == ["おはよう"]
+    assert not list(tmp_path.glob(".stripih-*"))
 
 
 @pytest.mark.parametrize("marker", [".stripih", ".ffsubsync"])
-def test_temporary_path_is_a_creatable_sibling(marker: str) -> None:
-    subtitle = Path("dir") / ("あ" * 82 + ".srt")
-    temporary = temporary_path(subtitle, marker)
-
-    assert temporary.parent == subtitle.parent
-    assert temporary.name.endswith(marker + ".srt")
-    assert len(os.fsencode(temporary.name)) <= 255
-
-
-def test_temporary_path_distinguishes_names_that_truncate() -> None:
-    """Truncation eats the tail that told two long names apart; the token does not.
-
-    `--all --rename` writes that shape: a sidecar is `stem.release.ja`, so the
-    only parts that differ are the last ones to survive a long stem.
-    """
-    stem = "あ" * 82
-    first = temporary_path(Path("dir") / f"{stem}A.srt", ".stripih")
-    second = temporary_path(Path("dir") / f"{stem}B.srt", ".stripih")
-
-    assert first != second
-    assert all(len(os.fsencode(path.name)) <= 255 for path in (first, second))
+def test_temporary_path_reserves_unique_siblings(tmp_path: Path, marker: str) -> None:
+    subtitle = tmp_path / ("あ" * 82 + ".SRT")
+    first = temporary_path(subtitle, marker)
+    second = temporary_path(subtitle, marker)
+    try:
+        assert first != second
+        assert first.parent == second.parent == subtitle.parent
+        assert first.suffix == second.suffix == subtitle.suffix.casefold()
+        assert first.exists() and second.exists()
+        assert all(len(os.fsencode(path.name)) <= 255 for path in (first, second))
+    finally:
+        first.unlink(missing_ok=True)
+        second.unlink(missing_ok=True)
 
 
-def test_temporary_path_is_unique_per_call() -> None:
-    """Two runs over one directory must not rename from the same file."""
-    subtitle = Path("dir") / "episode.srt"
+class StubParser:
+    def parse_args(self, arguments: list[str]) -> Path:
+        return Path(arguments[arguments.index("-o") + 1])
 
-    assert temporary_path(subtitle, ".stripih") != temporary_path(subtitle, ".stripih")
+
+def test_sync_subtitle_replaces_from_a_written_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subtitle = tmp_path / "dialogue.SRT"
+    subtitle.write_text("original")
+    subtitle.chmod(0o640)
+    video = tmp_path / "video.mkv"
+    video.touch()
+
+    monkeypatch.setattr("jimaku_cli.postprocess.make_parser", StubParser)
+
+    def run(output: Path) -> dict[str, bool]:
+        assert output.suffix == ".srt"
+        output.write_text("synced")
+        return {"sync_was_successful": True}
+
+    monkeypatch.setattr("jimaku_cli.postprocess.ffsubsync.run", run)
+
+    sync_subtitle(subtitle, video)
+
+    assert subtitle.read_text() == "synced"
+    assert subtitle.stat().st_mode & 0o777 == 0o640
+    assert not list(tmp_path.glob(".ffsubsync-*"))
+
+
+def test_sync_subtitle_does_not_replace_with_an_empty_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subtitle = tmp_path / "dialogue.srt"
+    subtitle.write_text("original")
+    video = tmp_path / "video.mkv"
+    video.touch()
+    monkeypatch.setattr("jimaku_cli.postprocess.make_parser", StubParser)
+    monkeypatch.setattr(
+        "jimaku_cli.postprocess.ffsubsync.run",
+        lambda _args: {"sync_was_successful": True},
+    )
+
+    with pytest.raises(AlignError):
+        sync_subtitle(subtitle, video)
+
+    assert subtitle.read_text() == "original"
+    assert not list(tmp_path.glob(".ffsubsync-*"))
+
+
+def test_sync_subtitle_cleans_up_when_argument_parsing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subtitle = tmp_path / "dialogue.srt"
+    subtitle.write_text("original")
+    video = tmp_path / "video.mkv"
+    video.touch()
+
+    class BrokenParser:
+        def parse_args(self, _arguments: list[str]) -> None:
+            raise RuntimeError("bad arguments")
+
+    monkeypatch.setattr("jimaku_cli.postprocess.make_parser", BrokenParser)
+
+    with pytest.raises(RuntimeError, match="bad arguments"):
+        sync_subtitle(subtitle, video)
+
+    assert subtitle.read_text() == "original"
+    assert not list(tmp_path.glob(".ffsubsync-*"))

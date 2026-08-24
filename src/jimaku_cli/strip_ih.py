@@ -3,20 +3,16 @@
 import codecs
 import os
 import re
-import secrets
+import shutil
+import tempfile
 import unicodedata
 from collections.abc import Collection, Iterable
-from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["strip_ih"]
+import pysubs2
+from pysubs2 import SSAEvent
 
-# The strip only ever changes cue text, so the file is edited in place around
-# the text fields rather than reserialized. Everything else -- timestamps, line
-# endings, the BOM, headers, `[Aegisub Extradata]`, SRT coordinate fields,
-# indentation -- is copied through as the bytes it arrived as, because it is
-# never rewritten. pysubs2 clamped timestamps past ten hours and negative ones,
-# normalized CRLF and dropped ideographic indentation on the way through.
+__all__ = ["strip_ih"]
 
 # Japanese SDH uses fullwidth parentheses for speaker IDs and sound effects, but
 # Netflix also prescribes the same delimiters for whispered or mouthed dialogue.
@@ -25,67 +21,17 @@ __all__ = ["strip_ih"]
 PAREN_PAIRS = {"（": "）", "(": ")"}
 PAREN_CLOSE = frozenset(PAREN_PAIRS.values())
 
-# Japanese broadcast rips double a halfwidth delimiter -- `((...))` -- around a
-# voice heard off screen, down a phone, or in memory. Read off the corpus rather
-# than off a published standard: the public ARIB STD-B24 material does not name
-# the convention, so what justifies passing it through is that its contents
-# scan as speech wherever it appears here. Neither half is annotation, so both
-# pass through. Only at the top level: inside an open group
-# the same pair is two nested closes, which is what a provider writing both
-# speaker labels and furigana halfwidth produces. Only halfwidth doubles this
-# way; `)）` is a nested ruby close and must still pair.
+# Broadcast subtitles use top-level `((...))` for off-screen speech. Inside
+# another group, the doubled delimiters still participate in normal nesting.
 VOICE_MARKER = "()"
 
-# Only parentheses. The other brackets carry dialogue: `＜＞` and `《》` mark
-# interior monologue, `「」` quotation. One episode in the sample corpus is 101
-# `＜...＞` lines, a third of its script, and stripping them would delete it.
-
-# Captures the separator so `tidy_lines` can put back the break it found: SRT
-# writes real newlines and SubStation writes `\N`, and a cue rejoined with the
-# wrong one is a cue with a literal `\N` in its text or a broken block. `\r\n`
-# is one break and has to match as one, or dropping the line before it strands
-# a carriage return in the middle of the cue.
+# Keep each display-line separator so tidying cannot change hard and soft breaks.
 LINE_BREAK = re.compile(r"(\\N|\\n|\r\n|\n|\r)")
 
-# SRT's HTML tags are markup on the same terms as an override block: neither is
-# something the cue says. The brace pattern is pysubs2's `OVERRIDE_SEQUENCE`.
-OVERRIDE_SEQUENCE = re.compile(r"\{[^}]*\}")
-MARKUP = re.compile(OVERRIDE_SEQUENCE.pattern + r"|</?[a-zA-Z][^>]*>")
+# SRT HTML and SubStation overrides are markup, not spoken text.
+MARKUP = re.compile(SSAEvent.OVERRIDE_SEQUENCE.pattern + r"|</?[a-zA-Z][^>]*>")
 
-# `\p1`..`\p9` inside an override block open a vector drawing, which is not
-# text. pysubs2 reads the scale as a single digit and calls the event a drawing
-# when any fragment of it is scaled above zero; matching that keeps the raw path
-# deciding what is editable exactly as `SSAEvent.is_text` did.
-DRAWING = re.compile(r"\\p[1-9]")
-
-# A file is split on its own terminators rather than with `str.splitlines`,
-# which also breaks on U+2028 and friends -- characters that appear inside cue
-# text and must not be mistaken for the end of a line.
-FILE_LINE = re.compile(r"[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+")
-
-# A SubStation event line, up to the colon that ends its keyword.
-EVENT_LINE = re.compile(r"[ \t]*(Dialogue|Comment)[ \t]*:", re.IGNORECASE)
-
-# An SRT cue is framed on its timing line -- two times joined by an arrow, and
-# nothing else on the line -- while the ordinal above it is decoration. Framing
-# on that line rather than on blank ones is what lets a blank line sit inside a
-# cue without ending it; `timing_line` says why the whole line has to match.
-# No field width is bounded: six corpus files write a four-digit hour and a
-# five-digit fraction, and a pattern that capped either would unframe the cues
-# those files are made of. The trailing `X1:...Y2:` coordinates some rips write
-# are part of the frame, and the terminator `file_lines` leaves on the line is
-# matched here rather than stripped off before the test.
-CUE_NUMBER = re.compile(r"([ \t]*)(\d+)([ \t]*(?:\r\n|\n|\r)?)")
-TIME_FIELD = r"\d+:\d+:\d+[.,]\d+"
-TIMING_LINE = re.compile(
-    rf"[ \t]*{TIME_FIELD}[ \t]*-->[ \t]*{TIME_FIELD}"
-    r"(?:[ \t]+[XY][12]:\d+)*[ \t]*(?:\r\n|\n|\r)?"
-)
-
-# HTML ruby has useful semantic structure: the base text is dialogue, while
-# <rt> is its reading and <rp> is fallback punctuation around that reading.
-# Work one non-nested container at a time so an unclosed <rt> cannot consume
-# dialogue through the next <ruby> element.
+# Match one container at a time so malformed ruby cannot consume a later one.
 RUBY_ELEMENT = re.compile(
     r"<ruby\b[^>]*>(?:(?!</?ruby\b).)*?</ruby\s*>",
     re.IGNORECASE | re.DOTALL,
@@ -94,58 +40,25 @@ RUBY_READING = re.compile(r"<(rt|rp)\b[^>]*>[^<]*</\1\s*>", re.IGNORECASE)
 RUBY_PART = re.compile(r"</?(?:rt|rp)\b", re.IGNORECASE)
 RUBY_CONTAINER = re.compile(r"</?(?:ruby|rb)\b[^>]*>", re.IGNORECASE)
 
-# A pair the strip left nothing between is litter: it renders as nothing, and
-# keeping it would have `（信子）` cost the cue a `<i></i>` it never asked for.
-# Both spellings, since SRT's tags reach the strip as literal text.
+# Remove formatting pairs left empty by a stripped annotation.
 EMPTY_PAIR = re.compile(
     r"\{\\(\w)1\}\s*\{\\\1 ?0\}"
     r"|<([a-zA-Z]+)[^>]*>\s*</\2>"
 )
 
-# Wave dashes and dashes pad a bare music marker: "♪~", "~♪", "♪--". Keep the
-# note list deliberately narrow so unrelated symbols are never treated as IH.
+# Keep the note list narrow so unrelated symbols are not treated as IH.
 MUSIC_PADDING = "~～〜ー-–—―‐"
 MUSIC_NOTES = "♪♫♬♩"
 
-# A display line may open with a marker that belongs to the annotation rather
-# than to the dialogue. Anything alphanumeric is real text and blocks the strip;
-# the rest does not, and of that only an audio-source marker leaves with the
-# group it annotates -- an icon for a phone, a television or a speaker, or the
-# chevrons a rip writes around an off-screen voice. Everything else that renders
-# is retained, because the strip did not put it there: a dash or a bullet still
-# separates two speakers once their names are gone, a bracket still needs its
-# other half, and a music marker is the music rule's to drop, not this one's.
-# Category is the test, with the chevrons named because they are symbols that a
-# bracket rule would otherwise catch: measured over the corpus `≪` carries a
-# closing `≫` on 0.4% of the lines it opens, while `《`, `「` and `〈` carry
-# theirs on 63-96%, so the chevrons mark and the brackets pair.
+# Source icons before a label leave with it. Dashes, bullets, quotation marks
+# and music notes remain because they can carry dialogue structure or content.
 ANNOTATION_MARKS = frozenset("≪≫∈＼")
 MARK_CATEGORIES = frozenset(("So", "Co", "Cf"))
 
-# Standalone parentheticals are only removed when their wording is clearly an
-# accessibility label. False negatives are intentional: `(今日は仕事でしょ？)`
-# is dialogue in the corpus, while `（ドアが開く音）` is not. Keep these lists to
-# stable caption vocabulary rather than trying to recognize arbitrary Japanese
-# sentences as actions or sounds.
-#
-# The split carries as much weight as the contents. Sound wording is evidence
-# that a group describes what is heard, so it vetoes learning that group as a
-# speaker label. Wording that names *who* speaks is not: `（一同）はい！` labels
-# the line it precedes exactly as `（信子）` does, and vetoing it would leave that
-# label in place while the identical `（２人）` stripped.
-#
-# `鈴` is matched whole rather than as a tail, because it is also how a name ends
-# and `（美鈴）` is a girl, not a bell. Measured over the corpus it is the only one
-# worth that trade: `鐘`, `息` and `咳` end far more sound words than names, so
-# they stay tails and `（震える息）` goes on stripping.
-#
-# `ベル` ends both and cannot be sorted by shape: `（ドアベル）` is a doorbell and
-# `（アベル）` is a man, and both are katakana to the end. What separates them is
-# where they sit. A group that is the whole annotation is the bell it was listed
-# for, while one that precedes dialogue is labelling it, so the word describes a
-# sound without ruling out a speaker -- 531 corpus labels recovered, and the 192
-# standalone bells still go. `音` sits the same way but cannot follow, because
-# lifting its veto would read `（風の音）だった` as a label on its own sentence.
+# Standalone groups require known accessibility vocabulary; ambiguous wording
+# stays. `ベル` may end either a sound or a name, so context decides whether it
+# vetoes a leading label. `鈴` is sound wording only as a whole word, protecting
+# names such as `美鈴`.
 AMBIGUOUS_SOUND_TAILS = ("ベル",)
 SPEAKER_SUFFIXES = (
     "一同",
@@ -155,11 +68,7 @@ SPEAKER_SUFFIXES = (
     "アナウンス",
     "通訳",
     "電子音声",
-    # `（リサの声）` is the standard form for a speaker heard off screen, down a
-    # phone, or in memory, and `（テレビの音声）` for a source: both name who is
-    # speaking and label the line that follows exactly as `（信子）` does. Read
-    # as sound wording instead they vetoed their own labels, which cost 2,728
-    # strips across the corpus -- `声` ends the tail, so every one of them lost.
+    # These name an off-screen speaker or audio source despite ending in 声.
     "の声",
     "の音声",
     "英語",
@@ -172,13 +81,7 @@ SPEAKER_SUFFIXES = (
     "ドイツ語",
 )
 
-# Caption notation that qualifies the line rather than naming its speaker.
-# One corpus instance against 6,733 files, but deleting dialogue is the
-# expensive direction. A minimum length would cost the 37,472 legitimate
-# one-character labels -- given names, and the `２人`/`３人` group labels that
-# sit alongside `（一同）` -- and rejecting a body that also appears mid-line in
-# the same file would cost 11,434 strips, since characters say each other's
-# names. A vocabulary entry is what the rest of this block already is.
+# Caption qualifiers that must not be learned as speaker labels.
 NON_LABELS = frozenset(("仮",))
 
 SOUND_WORDS = ("鈴",)
@@ -284,83 +187,17 @@ SPOKEN_ENDING = re.compile(
     r"だ[よねぞぜなわさか]?|[てよねぞぜか])$"
 )
 HIRAGANA = re.compile(r"[ぁ-ゟ]")
-# A single latin letter closing a group that is otherwise not latin tells one
-# role from another -- `（店員A）`, `（いじめっ子Ｂ）`, `（ｽﾀｯﾌC）`. The character
-# before it has to be non-latin, or `（ＨＥＹ）` and `（ＰＨＳ）` read as IDs too.
+# A trailing Latin letter distinguishes role IDs, but all-Latin names stay.
 SPEAKER_ID = re.compile(r"[^A-Za-zＡ-Ｚａ-ｚ][A-Za-zＡ-Ｚａ-ｚ]$")
 RUBY = re.compile(r"[ぁ-ゟァ-ヿー～〜・･\s]+")
 HAN_AT_END = re.compile(r"[㐀-鿿々〆ヵヶ]$")
-# A group written halfwidth inside another is furigana, and counting its kana
-# would read the label it annotates as speech: `(大谷敦士(おおたにあつし))` is
-# 64% hiragana with the reading and 0% without it.
+# Ignore nested furigana when classifying its outer label.
 NESTED_RUBY = re.compile(r"\(" + RUBY.pattern + r"\)")
-# An honorific or a role names a person, so a group ending in one is a label
-# however much kana it holds.
-# A Japanese sentence cannot open with `を`: it marks the object of the verb
-# that follows it, so a group standing in front of one is that sentence's
-# object and not a label on it -- `（君の声）を聞いた` is a line of dialogue that
-# happens to parenthesise part of itself. Only the label test asks. A furigana
-# reading is followed by the rest of its own sentence as a matter of course, and
-# `（えいきょう）を` is still ruby: guarding the reading on it too would give
-# back 1,514 corpus strips, while guarding the label costs none at all.
+# A leading group before object particle を belongs to the sentence, not a label.
 OBJECT_PARTICLE = "を"
 NAME_MARKERS = re.compile(
     r"(?:ちゃん|さん|くん|君|さま|様|先生|せんせー|せんせい|たち|達)$"
 )
-
-
-@dataclass
-class Cue:
-    """One event, holding its raw text field and the bytes on either side.
-
-    `prefix` and `suffix` are the rest of the event verbatim -- for SubStation
-    the field list up to the last comma and the line terminator, for SRT the
-    timestamp line and the blank line that closes the block -- so rendering an
-    untouched cue reproduces it byte for byte, and dropping one takes its whole
-    block with it.
-    """
-
-    text: str
-    editable: bool
-    prefix: str
-    suffix: str
-    # SRT only: the ordinal line, split so it can be renumbered in place.
-    number: tuple[str, str, str] | None = None
-
-    def render(self, ordinal: int, renumber: bool) -> str:
-        head = self.prefix
-        if self.number is not None:
-            indent, digits, terminator = self.number
-            head = indent + (str(ordinal) if renumber else digits) + terminator + head
-        return head + self.text + self.suffix
-
-
-@dataclass
-class Document:
-    """A subtitle file as literal text with the cue text fields carved out.
-
-    Every byte of the file belongs to exactly one literal or one cue, and
-    `literals` brackets `cues` on both sides, so a document nothing changed
-    renders back to the bytes it was read from.
-    """
-
-    literals: list[str]
-    cues: list[Cue]
-    # SRT numbers its cues, and a gap left by a dropped one trips strict
-    # parsers. The ordinals are rewritten only when a cue actually goes, since
-    # otherwise the original digits are bytes we have no reason to touch.
-    renumbers: bool = False
-
-    def render(self, keep: list[bool]) -> str:
-        renumber = self.renumbers and not all(keep)
-        parts = [self.literals[0]]
-        ordinal = 0
-        for cue, literal, kept in zip(self.cues, self.literals[1:], keep):
-            if kept:
-                ordinal += 1
-                parts.append(cue.render(ordinal, renumber))
-            parts.append(literal)
-        return "".join(parts)
 
 
 def strip_ih(subtitle: Path) -> None:
@@ -368,240 +205,102 @@ def strip_ih(subtitle: Path) -> None:
 
     Drops high-confidence speaker labels, sound effects, bare music markers,
     parenthesised kana readings after kanji and HTML ruby. Ambiguous
-    parenthesised text is dialogue and stays. Edits SubStation and SRT in
-    place, rewriting only the text of the cues that changed; every other
-    format is left alone.
+    parenthesised text is dialogue and stays. SRT, ASS and SSA are supported;
+    every other format is left alone.
     """
-    readers = {".ass": read_substation, ".ssa": read_substation, ".srt": read_subrip}
-    # WebVTT and the binary `.sub` that `SUBTITLE_EXTS` also admits have no
-    # reader here. A silent no-op is safer than corrupting a downloaded file.
-    read = readers.get(subtitle.suffix.casefold())
-    if read is None:
+    formats = {".ass": "ass", ".ssa": "ssa", ".srt": "srt"}
+    format_ = formats.get(subtitle.suffix.casefold())
+    if format_ is None:
         return
 
-    encoding, bom = subtitle_encoding(subtitle)
-    text = subtitle.read_bytes()[len(bom) :].decode(encoding)
-    document = read(text)
+    encoding = subtitle_encoding(subtitle)
+    subs = pysubs2.load(
+        subtitle,
+        encoding=encoding,
+        format_=format_,
+        keep_html_tags=True,
+    )
+    # The SRT writer omits drawing events. Leave such an unusual file whole.
+    if format_ == "srt" and any(event.is_drawing for event in subs):
+        return
 
     labels = speaker_labels(
-        strip_html_ruby(cue.text) for cue in document.cues if cue.editable
+        strip_html_ruby(event.text) for event in subs if event.is_text
     )
-    keep: list[bool] = []
-    for cue in document.cues:
-        # Comment lines and {\p1} drawings are not dialogue; leave them alone.
-        if not cue.editable:
-            keep.append(True)
+    changed = False
+    kept: list[SSAEvent] = []
+    for event in subs:
+        # Comments and SubStation drawings are not dialogue.
+        if not event.is_text:
+            kept.append(event)
             continue
-        original = cue.text
+
+        original = event.text
         without_ruby = strip_html_ruby(original)
         stripped = strip_parenthesised(without_ruby, labels)
         if music_marker_only(stripped):
             stripped = ""
         elif stripped != without_ruby:
             stripped = tidy_lines(stripped, without_ruby)
-        if stripped != original:
-            cue.text = stripped
-        keep.append(cue.text == original or visible(cue.text))
 
-    payload = document.render(keep)
-    # Nothing to strip: leave the file alone. Not an optimization -- it is what
-    # makes a subtitle with no annotations byte-for-byte untouched.
-    if payload == text:
+        if stripped != original:
+            event.text = stripped
+            changed = True
+        if stripped == original or visible(stripped):
+            kept.append(event)
+
+    # Avoid normalizing files that did not need any stripping.
+    if not changed:
         return
 
-    stripped_file = temporary_path(subtitle, ".stripih")
+    ensure_serializable_timestamps(kept, format_)
+    subs.events = kept
+    temporary = temporary_path(subtitle, ".stripih")
     try:
-        stripped_file.write_bytes(bom + payload.encode(encoding))
-        os.replace(stripped_file, subtitle)
+        subs.save(
+            temporary,
+            encoding=encoding,
+            format_=format_,
+            keep_ssa_tags=True,
+        )
+        shutil.copymode(subtitle, temporary)
+        os.replace(temporary, subtitle)
     finally:
-        stripped_file.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
 
 
-# A temporary name has to fit the filesystem's limit -- 255 bytes on Linux --
-# and one subtitle in the sample corpus is already 249 of them, so the stem is
-# what gives way. `os.replace` needs the file it renames to be a sibling, which
-# is why the directory cannot give way instead.
-#
-# Truncating the stem is what makes a name ambiguous: two long names differing
-# only in the tail truncate to one path, and `--all --rename` writes exactly
-# that shape, since a sidecar is `stem.release.ja` and truncation eats the
-# language tag and then the release. The token is what makes the name unique,
-# and it sits in the tail where truncation cannot reach it. Being per call
-# rather than per name also keeps two runs over one directory apart, so neither
-# can rename a file the other is still writing -- the marker only says what the
-# file is for, to whoever finds one a killed run left behind.
-NAME_MAX = 255
-TOKEN_BYTES = 4
+def subtitle_encoding(subtitle: Path) -> str:
+    """Select a Unicode codec from a BOM, defaulting to UTF-8."""
+    with subtitle.open("rb") as file:
+        prefix = file.read(4)
+    if prefix.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return "utf-32"
+    if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    return "utf-8-sig" if prefix.startswith(codecs.BOM_UTF8) else "utf-8"
+
+
+def ensure_serializable_timestamps(events: Iterable[SSAEvent], format_: str) -> None:
+    """Refuse a rewrite when pysubs2 would clamp a cue timestamp."""
+    maximum = 35_999_990 if format_ in {"ass", "ssa"} else 359_999_999
+    if any(
+        timestamp < 0 or timestamp > maximum
+        for event in events
+        for timestamp in (event.start, event.end)
+    ):
+        raise ValueError(f"{format_.upper()} timestamp is outside pysubs2's range")
 
 
 def temporary_path(subtitle: Path, marker: str) -> Path:
-    """A sibling path for a rewritten file: unique, and short enough to create."""
-    tail = f".{secrets.token_hex(TOKEN_BYTES)}{marker}{subtitle.suffix}"
-    stem = subtitle.stem
-    while stem and len(os.fsencode(stem + tail)) > NAME_MAX:
-        stem = stem[:-1]
-    return subtitle.with_name(stem + tail)
-
-
-# Widest first: a UTF-32 LE mark opens with a UTF-16 LE one. The codecs name a
-# byte order rather than leaving it to the encoder, which always writes little
-# endian for the bare `utf-16` and `utf-32` names and would silently flip a
-# big-endian file. The mark itself is written back verbatim.
-BYTE_ORDER_MARKS = (
-    (codecs.BOM_UTF32_LE, "utf-32-le"),
-    (codecs.BOM_UTF32_BE, "utf-32-be"),
-    (codecs.BOM_UTF16_LE, "utf-16-le"),
-    (codecs.BOM_UTF16_BE, "utf-16-be"),
-    (codecs.BOM_UTF8, "utf-8"),
-)
-
-
-def subtitle_encoding(subtitle: Path) -> tuple[str, bytes]:
-    """Return a codec and the byte-order mark to write back before its output."""
-    with subtitle.open("rb") as file:
-        prefix = file.read(4)
-    for bom, encoding in BYTE_ORDER_MARKS:
-        if prefix.startswith(bom):
-            return encoding, bom
-    return "utf-8", b""
-
-
-def file_lines(text: str) -> list[str]:
-    """Split into lines that each keep their own terminator."""
-    return FILE_LINE.findall(text)
-
-
-def line_terminator(line: str) -> str:
-    """The newline a line ends with, if it has one."""
-    for terminator in ("\r\n", "\n", "\r"):
-        if line.endswith(terminator):
-            return terminator
-    return ""
-
-
-def is_drawing(text: str) -> bool:
-    """Whether a SubStation event is a vector drawing rather than text."""
-    return bool(DRAWING.search("".join(OVERRIDE_SEQUENCE.findall(text))))
-
-
-def read_substation(text: str) -> Document:
-    """Carve the Text field out of every event line in an ASS or SSA file.
-
-    `Text` is last in every Format variant the corpus carries, so the field
-    runs from the comma that ends the one before it to the end of the line.
-    The index is read from the file's own Format line rather than assumed.
-    """
-    literals: list[str] = []
-    cues: list[Cue] = []
-    pending: list[str] = []
-    text_index: int | None = None
-    in_events = False
-
-    for line in file_lines(text):
-        cue = None
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_events = stripped.casefold() == "[events]"
-        elif in_events and stripped.casefold().startswith("format:"):
-            fields = [field.strip() for field in stripped.split(":", 1)[1].split(",")]
-            text_index = fields.index("Text") if "Text" in fields else None
-        elif in_events and text_index is not None:
-            cue = substation_cue(line, text_index)
-        if cue is None:
-            pending.append(line)
-            continue
-        literals.append("".join(pending))
-        pending = []
-        cues.append(cue)
-
-    literals.append("".join(pending))
-    return Document(literals, cues)
-
-
-def substation_cue(line: str, text_index: int) -> Cue | None:
-    """One event line split at the comma that opens its Text field."""
-    keyword = EVENT_LINE.match(line)
-    if keyword is None:
-        return None
-    position = keyword.end()
-    for _ in range(text_index):
-        comma = line.find(",", position)
-        # Too few fields to locate Text: malformed, so copy it through whole.
-        if comma < 0:
-            return None
-        position = comma + 1
-    terminator = line_terminator(line)
-    field = line[position : len(line) - len(terminator)]
-    return Cue(
-        text=field,
-        editable=keyword.group(1).casefold() == "dialogue" and not is_drawing(field),
-        prefix=line[:position],
-        suffix=terminator,
-    )
-
-
-def timing_line(line: str) -> bool:
-    """Whether a line frames an SRT cue: two times joined by an arrow, alone.
-
-    pysubs2 counted the times alone, which reads a dialogue line quoting two
-    timecodes as a cue boundary -- splitting the cue, and taking the real line
-    with the block it opens. Requiring the arrow between them is not enough on
-    its own, because a line can quote the arrow as readily as the times, so the
-    pair has to be the whole line. The fields themselves stay loose, since the
-    corpus writes two widths and only one of them is the usual one. Anchoring
-    reclassifies nothing: over the corpus's 5,244 SRT files it agrees with the
-    unanchored test on all 10,660,916 lines, 2,394,675 of which are frames.
-    """
-    return TIMING_LINE.fullmatch(line) is not None
-
-
-def read_subrip(text: str) -> Document:
-    """Carve the text out of every cue in an SRT file.
-
-    A cue runs from its timing line to the ordinal of the next one, so a blank
-    line inside a cue stays part of it instead of ending it -- the text after
-    such a break is dialogue the strip has to see, and a file that numbers its
-    cues badly or not at all still parses. The timing line is copied whole,
-    which keeps the `X1:...Y2:` coordinates some rips write after the times.
-    """
-    lines = file_lines(text)
-    stamps = [index for index, line in enumerate(lines) if timing_line(line)]
-    # The ordinal above a timestamp opens that cue's block, so it is where the
-    # previous cue stops.
-    starts = [
-        stamp - 1 if stamp and CUE_NUMBER.fullmatch(lines[stamp - 1]) else stamp
-        for stamp in stamps
-    ]
-
-    literals: list[str] = []
-    cues: list[Cue] = []
-    previous = 0
-    for position, stamp in enumerate(stamps):
-        start = starts[position]
-        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
-        region = lines[stamp + 1 : end]
-        # Trailing blank lines close the block rather than belonging to the cue.
-        while region and not region[-1].strip():
-            region.pop()
-        body = "".join(region)
-        terminator = line_terminator(body)
-        field = body[: len(body) - len(terminator)]
-        number = CUE_NUMBER.fullmatch(lines[start]) if start < stamp else None
-
-        literals.append("".join(lines[previous:start]))
-        cues.append(
-            Cue(
-                text=field,
-                editable=not is_drawing(field),
-                prefix=lines[stamp],
-                suffix=terminator + "".join(lines[stamp + 1 + len(region) : end]),
-                number=number.groups() if number else None,
-            )
-        )
-        previous = end
-
-    literals.append("".join(lines[previous:]))
-    return Document(literals, cues, renumbers=True)
+    """Reserve a unique sibling temporary with the subtitle's format suffix."""
+    prefix = f".{marker.strip('.')}-"
+    with tempfile.NamedTemporaryFile(
+        dir=subtitle.parent,
+        prefix=prefix,
+        suffix=subtitle.suffix.casefold(),
+        delete=False,
+    ) as file:
+        return Path(file.name)
 
 
 def strip_html_ruby(text: str) -> str:
@@ -628,8 +327,7 @@ def parenthesised_spans(text: str) -> list[tuple[int, int]]:
             continue
 
         char = text[index]
-        # ARIB's doubled halfwidth opener marks speech, including when its close
-        # is in another cue. It is never an annotation delimiter at top level.
+        # Top-level doubled halfwidth delimiters mark speech, not annotations.
         if not stack and char in VOICE_MARKER and text[index : index + 2] == char * 2:
             index += 2
             continue
@@ -638,8 +336,7 @@ def parenthesised_spans(text: str) -> list[tuple[int, int]]:
         elif char in PAREN_CLOSE and stack:
             expected, start = stack[-1]
             if char != expected:
-                # A malformed outer group is ambiguous. In particular, do not
-                # delete a valid-looking inner pair and leave half a sentence.
+                # A malformed outer group is ambiguous; preserve it whole.
                 stack.clear()
             else:
                 stack.pop()
@@ -706,10 +403,7 @@ def annotation_marker(opening: str) -> bool:
     """Whether everything a line renders before a group annotates its source."""
     return bool(opening) and all(
         char in ANNOTATION_MARKS
-        or (
-            unicodedata.category(char) in MARK_CATEGORIES
-            and char not in MUSIC_NOTES
-        )
+        or (unicodedata.category(char) in MARK_CATEGORIES and char not in MUSIC_NOTES)
         or char.isspace()
         for char in opening
     )
@@ -718,12 +412,7 @@ def annotation_marker(opening: str) -> bool:
 def rendered_positions(
     text: str, spans: Collection[tuple[int, int]], start: int, end: int
 ) -> list[tuple[int, int]]:
-    """Each character a slice renders, one span apiece, markup and groups aside.
-
-    Single characters rather than runs, so that dropping a marker cannot take an
-    override block with it: `{\\pos(172,407)}📻{\\fscx50}（レミ）` must keep both
-    blocks and lose only the icon.
-    """
+    """Return rendered-character spans without swallowing surrounding markup."""
     positions: list[tuple[int, int]] = []
     index = start
     while index < end:
@@ -746,12 +435,7 @@ def is_leading_label(
     span: tuple[int, int],
     body: str,
 ) -> bool:
-    """Whether a group names the speaker of dialogue that follows it.
-
-    The question `search` asks while fast-forwarding is the one `download`
-    answers, and the same holds here: learning a label and stripping one are the
-    same test, so they are the same function.
-    """
+    """Whether a group names the speaker of dialogue that follows it."""
     before, _ = line_context(text, spans, span)
     after = outside_text(text, spans, span[1], len(text))
     return (
@@ -779,14 +463,12 @@ def looks_spoken(body: str) -> bool:
         return True
     if any(char in SPOKEN_PUNCTUATION for char in body):
         return True
-    # Before the bare-letter test, which would otherwise read the `A` that
-    # separates `（店員A）` from `（店員B）` as the Latin script of real speech.
+    # Check role IDs before treating Latin letters as evidence of speech.
     if SPEAKER_ID.search(body):
         return False
     if re.search(r"[A-Za-z]", body):
         return True
-    # Checked after the punctuation, so a named line that is plainly spoken --
-    # `(庄太さーん\N早く ごはん食べて！)` -- still reads as speech on its `！`.
+    # Punctuation still wins when an honorific appears in spoken dialogue.
     if NAME_MARKERS.search(body):
         return False
     if SPOKEN_ENDING.search(body):
@@ -825,12 +507,8 @@ def annotation_label(body: str) -> bool:
 def ruby_reading(text: str, span: tuple[int, int], body: str) -> bool:
     """Whether a halfwidth group is a kana reading immediately after kanji.
 
-    Halfwidth is the whole of the rule, and deliberately: Netflix prescribes the
-    fullwidth pair for speaker IDs, sound effects and whispered dialogue, and
-    sets ruby as positioned text rather than parenthesising it, so a fullwidth
-    group is spoken or annotated until shown otherwise. It costs the 78 corpus
-    readings written `姉弟（きょうだい）`, against a rule that would otherwise
-    read every kana remark after a kanji as a reading of it.
+    Fullwidth groups remain ambiguous because captions also use them for spoken
+    asides; stripping only halfwidth readings is deliberately conservative.
     """
     start, _ = span
     if text[start] != "(" or not body or not RUBY.fullmatch(body):
@@ -857,8 +535,8 @@ def strip_parenthesised(text: str, labels: Collection[str] = ()) -> str:
     """Remove only high-confidence parenthetical annotations and ruby.
 
     Groups nest and markup is opaque. Strict matching means malformed or
-    unmatched punctuation survives whole, while ARIB's top-level `((...))`
-    voice marker is never treated as an annotation. A group is removed when it
+    unmatched punctuation survives whole, while top-level `((...))` is never
+    treated as an annotation. A group is removed when it
     is a known leading label, clearly precedes visible dialogue, occupies a line
     as an explicit sound/source description, or is a halfwidth kana reading
     after kanji. A marker the line opens with goes when it annotates the same
@@ -886,8 +564,7 @@ def strip_parenthesised(text: str, labels: Collection[str] = ()) -> str:
                 line_start, _ = line_bounds(text, span)
                 drop += rendered_positions(text, spans, line_start, start)
 
-    # Sorted and deduplicated: a marker precedes the group it belongs to, and two
-    # groups on one line report the same marker between them.
+    # A marker and multiple groups can report the same span.
     for start, end in sorted(set(drop), reverse=True):
         text = text[:start] + text[end:]
     return text
@@ -896,23 +573,11 @@ def strip_parenthesised(text: str, labels: Collection[str] = ()) -> str:
 def tidy_lines(text: str, original: str) -> str:
     """Drop emptied lines while carrying their markup onto surviving text.
 
-    Each surviving line is rejoined with the break it originally carried, and a
-    dropped line takes its break with it, so a cue keeps whichever of `\\N`,
-    `\\n` or a real newline it was written with.
-
-    Tidying is confined to the lines the strip changed, on the same terms as
-    the file around them: a line the strip did not touch is a line whose
-    spacing it did not make, and one dialogue line losing an annotation is no
-    reason to reindent the one below it. Even on a changed line only spaces and
-    tabs go -- the ideographic space a provider indents with is text the strip
-    did not put there, and `visible` judges a line of it empty regardless.
+    Preserve each separator and the spacing of lines the strip did not change.
     """
     parts = LINE_BREAK.split(text)
     before = LINE_BREAK.split(original)
-    # A group and the marker that opens its line both sit within one display
-    # line, so a removal never spans a break and the two splits stay aligned.
-    # Alignment is checked rather than assumed, and a cue that somehow lost a
-    # line is tidied whole rather than compared against the wrong original.
+    # Removals normally stay within one line; guard alignment before comparing.
     aligned = len(before) == len(parts)
     kept: list[tuple[str, str]] = []
     carry = ""
@@ -925,8 +590,7 @@ def tidy_lines(text: str, original: str) -> str:
             kept.append((sweep_empty(carry + line), separator))
             carry = ""
         else:
-            # Only the markup is worth carrying; a dropped line's whitespace
-            # would arrive as a stray space or carriage return on the next one.
+            # Carry markup, not whitespace from the removed line.
             carry += line.strip()
     if carry and kept:
         line, separator = kept[-1]
@@ -958,7 +622,11 @@ def visible(text: str) -> bool:
 def music_marker_only(text: str) -> bool:
     """Whether a cue is only music notes and their conventional padding."""
     plain = bare(text)
-    return bool(plain) and any(char in MUSIC_NOTES for char in plain) and all(
-        char.isspace() or char in MUSIC_NOTES or char in MUSIC_PADDING
-        for char in plain
+    return (
+        bool(plain)
+        and any(char in MUSIC_NOTES for char in plain)
+        and all(
+            char.isspace() or char in MUSIC_NOTES or char in MUSIC_PADDING
+            for char in plain
+        )
     )
