@@ -33,8 +33,8 @@ left alone. Non-interactive and safe to re-run.
 Halfwidth is the whole of the parenthesised rule: the fullwidth pair is prescribed for speaker IDs,
 sound effects and whispered dialogue, and ruby is set as positioned text rather than parenthesised,
 so a fullwidth group is spoken or annotated until shown otherwise — at the cost of the 78 corpus
-readings written `姉弟（きょうだい）`. Reaches `.srt`, `.ass` and `.ssa`; `.vtt` and `.sub` have no
-reader and are left alone. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
+readings written `姉弟（きょうだい）`. Reaches `.srt`, `.ass` and `.ssa`; `.vtt` and `.sub` are not
+processed. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
 
 ### `jimaku search [DIRECTORY]`
 
@@ -239,43 +239,37 @@ still strip. Only halfwidth doubles this way — `)）` is a nested ruby close a
 
 A marker-only music cue such as `♪～` is dropped, while `♪ lyrics ♪`, unrelated symbols, bare
 punctuation and ALL-CAPS text stay. Override blocks are opaque — counting the parentheses inside
-`{\pos(320,240)}` would corrupt it — and comment lines and drawings are left alone. SRT's `<i>` and
-its kin are markup on the same terms. Only a cue whose content changed is tidied, and within it only
-the lines that changed: a line the strip did not touch keeps the spacing the provider gave it, on
-the same terms as the file around it, so one line losing its label is no reason to reindent the line
-below. If removing a line would strand a spanning tag, its markup is carried to the surviving text,
-so `<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`.
+`{\pos(320,240)}` would corrupt it — and SRT's `<i>` and its kin are markup on the same terms. Only
+a cue whose content changed is tidied, and within it only the lines that changed. If removing a line
+would strand a spanning tag, its markup is carried to the surviving text, so
+`<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`.
 
-**The strip only ever changes cue text, so only cue text is ever rewritten.** The file is edited
-around its text fields rather than parsed into a model and reserialized, which makes the guarantee
-structural: a subtitle with nothing to strip is byte-for-byte untouched, and in a subtitle that did
-change, every byte outside a surviving cue's text field is too — timestamps, line endings, the
-byte-order mark, headers, `[Aegisub Extradata]`, SRT coordinate fields and indentation are
-identical because nothing rewrites them. A cue the strip empties is what leaves whole: it takes its
-own block with it, timestamps and all, because a cue with nothing left to say is not a cue.
-Reserializing cost all of these: timestamps past ten hours and negative ones were clamped, CRLF and
-ideographic indentation were dropped, and a cue's `\n` became `\N`. SRT ordinals are the single
-deliberate exception — a cue dropped from the middle would leave a gap that trips strict parsers, so
-surviving blocks are renumbered, and only when a cue was actually dropped.
+SRT, ASS and SSA are parsed and serialized by `pysubs2`. A subtitle with nothing to strip is not
+saved and remains byte-for-byte untouched. Once a cue changes, `pysubs2` may normalize line endings,
+headers, timestamps, numbering, SRT timing-line extensions and unknown ASS sections; exact byte
+preservation is not part of the contract. `keep_html_tags` and `keep_ssa_tags` retain the markup
+needed by the classifier and nonstandard SRT override tags. A cue emptied by stripping is removed.
 
-Finding the text field is per format. A SubStation event's is located by the index of `Text` in the
-file's own `Format:` line rather than a fixed offset; it is last in both variants the corpus
-carries, so the field runs to the end of the line. An `[Events]` section carrying no `Format:` line
-of its own, or one that names no `Text` field, leaves nothing to locate, and that file is left alone
-rather than read against an assumed order — pysubs2 ignored the declaration and assumed one always.
-An SRT cue is framed on its timing line — two times joined by an arrow — not on blank lines, so a
-blank line inside a cue does not end it and a file that numbers its cues badly or not at all still
-parses; the ordinal above the timing line opens the block. The pair has to be the whole line,
-because neither half of it is proof on its own: a line of dialogue that quotes two timecodes would
-otherwise split the cue and take the quoted line with the block it opened, and a line can quote the
-arrow between them as readily as the times. The time fields themselves are matched at any width,
-since corpus rips write a four-digit hour and a five-digit fraction and bounding either would
-unframe every cue in those files. `Comment:` lines and `{\p1}` drawings are not
-text and are never edited. A byte-order mark is written back as the bytes it arrived as, and its
-codec names an endianness, because Python's bare `utf-16` and `utf-32` encoders always write little
-endian and would silently flip a big-endian file. WebVTT and `.sub` have no reader here and are
-left alone, `.sub` whatever flavour it turns out to be; WebVTT is deliberately so, because the cue
-identifiers and settings it carries have nowhere to live in this model.
+**One cue changing reserializes the whole file, so normalization is not confined to what changed.**
+The SRT writer trims each cue and collapses its blank display lines, which reaches cues the strip
+never touched: a trailing ideographic space goes, and so does a leading empty line and whatever
+vertical placement it bought. Measured over the corpus this is the only difference from editing the
+text fields in place — 47 files, all SRT, and no cue's content differs anywhere in the 6,733.
+Tidying stays confined to the lines the strip changed because that is the strip's own decision; what
+the writer does to the rest of the file is not.
+
+ASS/SSA comments and drawings are retained but never classified. Because the SRT writer omits
+drawing events, an SRT containing one is left wholly untouched. A rewrite is also refused when a
+surviving timestamp falls outside the target format's representable range, rather than letting
+`pysubs2` clamp it. Parse or encoding failures are reported per file and leave the downloaded
+subtitle in place. UTF-8 is the default; byte-order marks select UTF-8, UTF-16 or UTF-32, and a
+rewrite writes back the mark its codec produces rather than the bytes that arrived. Python's bare
+`utf-16` and `utf-32` encoders always write little endian, so a big-endian file comes back little
+endian — correctly marked, and read back as what it was, but not the same bytes. Naming the
+endianness to preserve it costs a second decision about which mark to write; the corpus does not ask
+for one, carrying 5,802 UTF-8 marks, 14 little-endian UTF-16 and 917 files with no mark at all.
+WebVTT and `.sub` are not processed. Rewrites use a unique sibling temporary with the format
+extension, followed by atomic replacement.
 
 ## Logging and exit status
 
