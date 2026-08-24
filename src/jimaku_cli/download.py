@@ -66,7 +66,8 @@ def download(
         typer.Option(
             help=(
                 "Remove hearing-impaired annotations, and ruby readings written "
-                "as parenthesised kana after kanji or as HTML <ruby>."
+                "as halfwidth-parenthesised kana after kanji or as HTML <ruby>. "
+                "Applies to .srt, .ass and .ssa; .vtt and .sub are left alone."
             ),
         ),
     ] = download_config.get("strip_ih", False),

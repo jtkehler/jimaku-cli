@@ -25,9 +25,12 @@ __all__ = ["strip_ih"]
 PAREN_PAIRS = {"（": "）", "(": ")"}
 PAREN_CLOSE = frozenset(PAREN_PAIRS.values())
 
-# ARIB doubles a halfwidth delimiter -- `((...))` -- around a voice heard off
-# screen, down a phone, or in memory. What it wraps is speech, so neither half is
-# annotation and both pass through. Only at the top level: inside an open group
+# Japanese broadcast rips double a halfwidth delimiter -- `((...))` -- around a
+# voice heard off screen, down a phone, or in memory. Read off the corpus rather
+# than off a published standard: the public ARIB STD-B24 material does not name
+# the convention, so what justifies passing it through is that its contents
+# scan as speech wherever it appears here. Neither half is annotation, so both
+# pass through. Only at the top level: inside an open group
 # the same pair is two nested closes, which is what a provider writing both
 # speaker labels and furigana halfwidth produces. Only halfwidth doubles this
 # way; `)）` is a nested ruby close and must still pair.
@@ -135,6 +138,15 @@ MARK_CATEGORIES = frozenset(("So", "Co", "Cf"))
 # and `（美鈴）` is a girl, not a bell. Measured over the corpus it is the only one
 # worth that trade: `鐘`, `息` and `咳` end far more sound words than names, so
 # they stay tails and `（震える息）` goes on stripping.
+#
+# `ベル` ends both and cannot be sorted by shape: `（ドアベル）` is a doorbell and
+# `（アベル）` is a man, and both are katakana to the end. What separates them is
+# where they sit. A group that is the whole annotation is the bell it was listed
+# for, while one that precedes dialogue is labelling it, so the word describes a
+# sound without ruling out a speaker -- 531 corpus labels recovered, and the 192
+# standalone bells still go. `音` sits the same way but cannot follow, because
+# lifting its veto would read `（風の音）だった` as a label on its own sentence.
+AMBIGUOUS_SOUND_TAILS = ("ベル",)
 SPEAKER_SUFFIXES = (
     "一同",
     "全員",
@@ -143,6 +155,13 @@ SPEAKER_SUFFIXES = (
     "アナウンス",
     "通訳",
     "電子音声",
+    # `（リサの声）` is the standard form for a speaker heard off screen, down a
+    # phone, or in memory, and `（テレビの音声）` for a source: both name who is
+    # speaking and label the line that follows exactly as `（信子）` does. Read
+    # as sound wording instead they vetoed their own labels, which cost 2,728
+    # strips across the corpus -- `声` ends the tail, so every one of them lost.
+    "の声",
+    "の音声",
     "英語",
     "日本語",
     "外国語",
@@ -265,6 +284,10 @@ SPOKEN_ENDING = re.compile(
     r"だ[よねぞぜなわさか]?|[てよねぞぜか])$"
 )
 HIRAGANA = re.compile(r"[ぁ-ゟ]")
+# A single latin letter closing a group that is otherwise not latin tells one
+# role from another -- `（店員A）`, `（いじめっ子Ｂ）`, `（ｽﾀｯﾌC）`. The character
+# before it has to be non-latin, or `（ＨＥＹ）` and `（ＰＨＳ）` read as IDs too.
+SPEAKER_ID = re.compile(r"[^A-Za-zＡ-Ｚａ-ｚ][A-Za-zＡ-Ｚａ-ｚ]$")
 RUBY = re.compile(r"[ぁ-ゟァ-ヿー～〜・･\s]+")
 HAN_AT_END = re.compile(r"[㐀-鿿々〆ヵヶ]$")
 # A group written halfwidth inside another is furigana, and counting its kana
@@ -273,6 +296,14 @@ HAN_AT_END = re.compile(r"[㐀-鿿々〆ヵヶ]$")
 NESTED_RUBY = re.compile(r"\(" + RUBY.pattern + r"\)")
 # An honorific or a role names a person, so a group ending in one is a label
 # however much kana it holds.
+# A Japanese sentence cannot open with `を`: it marks the object of the verb
+# that follows it, so a group standing in front of one is that sentence's
+# object and not a label on it -- `（君の声）を聞いた` is a line of dialogue that
+# happens to parenthesise part of itself. Only the label test asks. A furigana
+# reading is followed by the rest of its own sentence as a matter of course, and
+# `（えいきょう）を` is still ruby: guarding the reading on it too would give
+# back 1,514 corpus strips, while guarding the label costs none at all.
+OBJECT_PARTICLE = "を"
 NAME_MARKERS = re.compile(
     r"(?:ちゃん|さん|くん|君|さま|様|先生|せんせー|せんせい|たち|達)$"
 )
@@ -367,7 +398,7 @@ def strip_ih(subtitle: Path) -> None:
         if music_marker_only(stripped):
             stripped = ""
         elif stripped != without_ruby:
-            stripped = tidy_lines(stripped)
+            stripped = tidy_lines(stripped, without_ruby)
         if stripped != original:
             cue.text = stripped
         keep.append(cue.text == original or visible(cue.text))
@@ -726,19 +757,33 @@ def is_leading_label(
     return (
         not opening_payload(before)
         and contextual_payload(after)
+        and not bare(after).startswith(OBJECT_PARTICLE)
         and bool(body)
         and body not in NON_LABELS
         and not looks_spoken(body)
-        and not sound_annotation(body)
+        and not vetoes_label(body)
+    )
+
+
+def vetoes_label(body: str) -> bool:
+    """Whether sound wording rules a group out as the speaker of what follows."""
+    return sound_annotation(body) and not without_nested_ruby(body).rstrip().endswith(
+        AMBIGUOUS_SOUND_TAILS
     )
 
 
 def looks_spoken(body: str) -> bool:
     """Whether a parenthetical plausibly contains speech rather than a label."""
     body = without_nested_ruby(body)
-    if body in SPOKEN_WORDS or re.search(r"[A-Za-z]", body):
+    if body in SPOKEN_WORDS:
         return True
     if any(char in SPOKEN_PUNCTUATION for char in body):
+        return True
+    # Before the bare-letter test, which would otherwise read the `A` that
+    # separates `（店員A）` from `（店員B）` as the Latin script of real speech.
+    if SPEAKER_ID.search(body):
+        return False
+    if re.search(r"[A-Za-z]", body):
         return True
     # Checked after the punctuation, so a named line that is plainly spoken --
     # `(庄太さーん\N早く ごはん食べて！)` -- still reads as speech on its `！`.
@@ -778,7 +823,15 @@ def annotation_label(body: str) -> bool:
 
 
 def ruby_reading(text: str, span: tuple[int, int], body: str) -> bool:
-    """Whether a halfwidth group is a kana reading immediately after kanji."""
+    """Whether a halfwidth group is a kana reading immediately after kanji.
+
+    Halfwidth is the whole of the rule, and deliberately: Netflix prescribes the
+    fullwidth pair for speaker IDs, sound effects and whispered dialogue, and
+    sets ruby as positioned text rather than parenthesising it, so a fullwidth
+    group is spoken or annotated until shown otherwise. It costs the 78 corpus
+    readings written `姉弟（きょうだい）`, against a rule that would otherwise
+    read every kana remark after a kanji as a reading of it.
+    """
     start, _ = span
     if text[start] != "(" or not body or not RUBY.fullmatch(body):
         return False
@@ -840,20 +893,33 @@ def strip_parenthesised(text: str, labels: Collection[str] = ()) -> str:
     return text
 
 
-def tidy_lines(text: str) -> str:
+def tidy_lines(text: str, original: str) -> str:
     """Drop emptied lines while carrying their markup onto surviving text.
 
     Each surviving line is rejoined with the break it originally carried, and a
     dropped line takes its break with it, so a cue keeps whichever of `\\N`,
-    `\\n` or a real newline it was written with. Only spaces and tabs are
-    trimmed -- the ideographic space a provider indents with is text the strip
+    `\\n` or a real newline it was written with.
+
+    Tidying is confined to the lines the strip changed, on the same terms as
+    the file around them: a line the strip did not touch is a line whose
+    spacing it did not make, and one dialogue line losing an annotation is no
+    reason to reindent the one below it. Even on a changed line only spaces and
+    tabs go -- the ideographic space a provider indents with is text the strip
     did not put there, and `visible` judges a line of it empty regardless.
     """
     parts = LINE_BREAK.split(text)
+    before = LINE_BREAK.split(original)
+    # A group and the marker that opens its line both sit within one display
+    # line, so a removal never spans a break and the two splits stay aligned.
+    # Alignment is checked rather than assumed, and a cue that somehow lost a
+    # line is tidied whole rather than compared against the wrong original.
+    aligned = len(before) == len(parts)
     kept: list[tuple[str, str]] = []
     carry = ""
     for position in range(0, len(parts), 2):
-        line = sweep_empty(parts[position].strip(" \t"))
+        raw = parts[position]
+        untouched = aligned and raw == before[position]
+        line = raw if untouched else sweep_empty(raw.strip(" \t"))
         separator = parts[position + 1] if position + 1 < len(parts) else ""
         if visible(line):
             kept.append((sweep_empty(carry + line), separator))

@@ -31,6 +31,16 @@ from jimaku_cli.strip_ih import (
         ("（竜の咆哮(ほうこう)）", ""),
         ("漢字(かんじ)", "漢字"),
         (r"{\pos(320,240)}（信子）おはよう", r"{\pos(320,240)}おはよう"),
+        # Names who speaks, exactly as （電子音声） does, though it ends in 声.
+        ("（リサの声）おはよう", "おはよう"),
+        ("（テレビの音声）ニュースです", "ニュースです"),
+        # A name that ends in the ベル it was listed as a doorbell for.
+        ("（アベル）おはよう", "おはよう"),
+        # A trailing letter tells one role from another; it is not speech.
+        ("（店員A）いらっしゃいませ", "いらっしゃいませ"),
+        ("（いじめっ子Ｂ）よお", "よお"),
+        # Whole-word, so ベル is still the doorbell it was listed for.
+        ("（ベル）", ""),
     ],
 )
 def test_strip_parenthesised_removes_high_confidence_annotations(
@@ -56,6 +66,8 @@ def test_strip_parenthesised_removes_high_confidence_annotations(
         "（君の声）を聞いた",
         "（風の音）だった",
         "（沈黙）ではない",
+        # All latin, so no trailing letter singles a role out of several.
+        "(NORI)おはよう",
         "(hello)",
         "ALL CAPS",
         "＜心の声＞",
@@ -158,8 +170,18 @@ def test_content_is_not_a_music_marker(text: str) -> None:
 
 
 def test_tidy_lines_keeps_markup_that_spans_a_removed_line() -> None:
-    assert tidy_lines(r"<i>\Nせりふ</i>") == "<i>せりふ</i>"
-    assert tidy_lines(r"せりふ\N</i>") == "せりふ</i>"
+    assert (
+        tidy_lines(r"<i>\Nせりふ</i>", r"<i>（信子）\Nせりふ</i>") == "<i>せりふ</i>"
+    )
+    assert (
+        tidy_lines(r"せりふ\N</i>", r"せりふ\N（ドアの音）</i>") == "せりふ</i>"
+    )
+
+
+def test_tidy_lines_leaves_the_spacing_of_lines_it_did_not_change() -> None:
+    # The line that lost its label is tidied and goes; the line below it never
+    # had a group on it, so the space it opens with is the provider's and stays.
+    assert tidy_lines(r" \N おはよう", r" （信子）\N おはよう") == " おはよう"
 
 
 def write_srt(

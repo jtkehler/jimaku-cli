@@ -29,7 +29,12 @@ left alone. Non-interactive and safe to re-run.
 | `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
 | `--align` | Time-align the subtitle against the video's audio, with ffsubsync. |
-| `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as parenthesised kana after kanji or as HTML `<ruby>`. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
+| `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as halfwidth-parenthesised kana after kanji or as HTML `<ruby>`.
+Halfwidth is the whole of the parenthesised rule: the fullwidth pair is prescribed for speaker IDs,
+sound effects and whispered dialogue, and ruby is set as positioned text rather than parenthesised,
+so a fullwidth group is spoken or annotated until shown otherwise — at the cost of the 78 corpus
+readings written `姉弟（きょうだい）`. Reaches `.srt`, `.ass` and `.ssa`; `.vtt` and `.sub` have no
+reader and are left alone. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
 
 ### `jimaku search [DIRECTORY]`
 
@@ -161,17 +166,37 @@ HTML ruby is semantic rather than heuristic: remove closed `<rt>`/`<rp>` reading
 label. Wording that names *who* speaks does not: `一同`, `全員`, `ナレーション`, `通訳`, `電子音声`
 and the languages label the line they precede exactly as `（信子）` does, and vetoing them would
 leave `（一同）はい！` standing while the identical `（２人）` stripped. Source is read before sound,
-so `電子音声` is not the `声` its tail ends in. `鈴` is matched whole rather than as a tail, because
-it is also how a name ends and `（美鈴）` is a girl, not a bell; `鐘`, `息` and `咳` end far more
-sound words than names, so they stay tails and `（震える息）` goes on stripping.
+so `電子音声` is not the `声` its tail ends in. `〜の声` and `〜の音声` are read the same way and for
+the same reason: `（リサの声）` names a speaker heard off screen and `（テレビの音声）` a source, and
+both label the line they follow onto exactly as `（信子）` does. Read instead as the sound their tail
+ends in, they vetoed their own labels — 2,728 corpus strips, `声` ending every one of them.
+
+`鈴` is matched whole rather than as a tail, because it is also how a name ends and `（美鈴）` is a
+girl, not a bell; `鐘`, `息` and `咳` end far more sound words than names, so they stay tails and
+`（震える息）` goes on stripping. `ベル` cannot be sorted by shape at all — `（ドアベル）` is a
+doorbell and `（アベル）` is a man, katakana to the end either way — so it is sorted by position
+instead. A group that is the whole annotation is the bell it was listed for; one that precedes
+dialogue is labelling it. The word describes a sound without ruling out a speaker, which recovers
+531 labels and still drops the 192 standalone bells. `音` sits the same way but keeps its veto,
+because lifting it would read `（風の音）だった` as a label on its own sentence, so the names ending
+in `音` — `（詩音）`, `（花音）` — stay a deliberate false negative.
+
+**A group is not a label on a line that opens with `を`.** A Japanese sentence cannot, so the group
+is that sentence's object rather than a label on it, and `（君の声）を聞いた` is one line of
+dialogue. Only the label test asks. A reading is followed by the rest of its own sentence as a
+matter of course, so guarding ruby on the same particle would give back 1,514 strips, while
+guarding the label costs none at all.
 
 **A group is normalized against furigana written inside it before either test, not just before the
 vocabulary.** `(大谷敦士(おおたにあつし))` is 64% hiragana with the reading and none without it, so
 counting its kana is how a label ends up read as speech.
 
 **An honorific or a role names a person, not a line.** A group ending in `ちゃん`, `さん`, `くん`,
-`君`, `様`, `先生`, `せんせー`, `たち` or `達` is a label however much kana it holds. Bare kana names
-— `（しんのすけ）`, `（はるか）` — are ambiguous by shape and are deliberately still kept.
+`君`, `様`, `先生`, `せんせー`, `たち` or `達` is a label however much kana it holds. A single latin
+letter closing a group that is otherwise not latin tells one role from another — `（店員A）`,
+`（いじめっ子Ｂ）`, `（ｽﾀｯﾌC）` — and names a speaker for the same reason; the character before it has
+to be non-latin, or `（ＨＥＹ）` and `（ＰＨＳ）` read as IDs too. Bare kana names — `（しんのすけ）`,
+`（はるか）` — are ambiguous by shape and are deliberately still kept.
 
 **Notation that qualifies the line sits where a label sits and is not one.** `（仮）` — "tentative" —
 precedes dialogue exactly as `（信子）` does, so it is named in a small vocabulary of non-labels
@@ -199,9 +224,12 @@ Only the marker's own characters go, never the override blocks around them.
 
 Two things follow from how the files are actually built, and each is load-bearing. Groups **nest**,
 so `（大谷敦士(おおたにあつし)）` needs a matcher, not a regex that stops at the first close. And a
-**doubled halfwidth delimiter is not a group at the top level** — ARIB writes `((…))` around a voice
-heard off screen, down a phone, or in memory, so what it wraps is speech and neither half is
-annotation: marker and line both stay. The span closes within its cue about as often as it runs on
+**doubled halfwidth delimiter is not a group at the top level** — the rips write `((…))` around a
+voice heard off screen, down a phone, or in memory, so what it wraps is speech and neither half is
+annotation: marker and line both stay. The convention is read off the corpus rather than off a
+published standard: it is conventionally credited to ARIB, but the public STD-B24 material does not
+name it, so what justifies passing it through is that its contents scan as speech wherever they
+appear here. The span closes within its cue about as often as it runs on
 into a later one, and both shapes have to behave identically, or the balanced form is deleted
 outright while the unbalanced form survives; passing the delimiter through is what satisfies that,
 since then neither shape is touched at all. Depth is what tells a marker from a close, not width:
@@ -212,9 +240,11 @@ still strip. Only halfwidth doubles this way — `)）` is a nested ruby close a
 A marker-only music cue such as `♪～` is dropped, while `♪ lyrics ♪`, unrelated symbols, bare
 punctuation and ALL-CAPS text stay. Override blocks are opaque — counting the parentheses inside
 `{\pos(320,240)}` would corrupt it — and comment lines and drawings are left alone. SRT's `<i>` and
-its kin are markup on the same terms. Only a cue whose content changed is tidied; if removing a line
-would strand a spanning tag, its markup is carried to the surviving text, so
-`<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`.
+its kin are markup on the same terms. Only a cue whose content changed is tidied, and within it only
+the lines that changed: a line the strip did not touch keeps the spacing the provider gave it, on
+the same terms as the file around it, so one line losing its label is no reason to reindent the line
+below. If removing a line would strand a spanning tag, its markup is carried to the surviving text,
+so `<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`.
 
 **The strip only ever changes cue text, so only cue text is ever rewritten.** The file is edited
 around its text fields rather than parsed into a model and reserialized, which makes the guarantee
