@@ -35,6 +35,8 @@ sound effects and whispered dialogue, and ruby is set as positioned text rather 
 so a fullwidth group is spoken or annotated until shown otherwise — at the cost of the 78 corpus
 readings written `姉弟（きょうだい）`. Reaches `.srt`, `.ass` and `.ssa`; `.vtt` and `.sub` are not
 processed. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
+| `--verbose` / `-v` | Report skipped and missing episodes as well. Off by default, which leaves
+only the outcomes a cron mail is worth reading. |
 
 ### `jimaku search [DIRECTORY]`
 
@@ -295,6 +297,12 @@ know why.
 Each line names the file it applies to, so a mail read a week later is actionable without rerunning
 anything.
 
+A run closes with a `summary:` tally whenever that tally has anything in it — downloaded and errors
+by default, all four outcomes under `--verbose`. The set it counts is derived from the visibility
+tiers rather than listed beside them, so it cannot come to disagree with the lines above it, and a
+tally of nothing is omitted rather than printed as zeroes, which is what leaves a fully-downloaded
+season silent.
+
 Exit status follows the same split as visibility: `0` when every video was downloaded, skipped, or
 missing, and nonzero when an `error` occurred. A season the provider hasn't uploaded yet is not a
 failure — it prints nothing and exits `0`, so neither cron mail nor a `set -e` wrapper fires on it.
@@ -309,13 +317,6 @@ placed in both tiers at once or in neither.
 `files` and the current `search` are debugging placeholders — thin dumps of API responses, not part
 of the intended command surface. Replacing `search` with the wizard described above is the next
 piece of work; `files` goes away once the wizard can show what releases an entry has.
-
-Logging is a work in progress: `download` currently prints its outcome lines to stdout, and the
-stream and default-visibility rules above are the target, not the present behavior. Moving those
-lines to stderr is a prerequisite for the wizard, since otherwise narration and the emitted command
-land on the same stream. `--verbose` is not implemented, so skipped and missing episodes currently
-print unconditionally — and a missing episode currently counts toward a nonzero exit, which the rule
-above reverses.
 
 **Open: does `search` run the download, or only emit the command?** Emit-only makes the stdout
 contract trivially honest and `jimaku search . | sh` the documented first run, at the cost of a
