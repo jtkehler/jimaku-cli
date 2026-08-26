@@ -5,6 +5,7 @@ from .config import api_key
 from .config import app as config_app
 from .download import app as download_app
 from .files import app as files_app
+from .output import error
 from .search import app as search_app
 
 app = typer.Typer(no_args_is_help=True)
@@ -19,10 +20,10 @@ def main(ctx: typer.Context):
     if ctx.invoked_subcommand in NO_CLIENT_COMMANDS:
         return
     if not api_key:
-        print(
+        error(
             "No API key found. Please set the JIMAKU_API_KEY environment variable or add one to the config file (see `jimaku config`)."
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(1)
     ctx.obj = JimakuClient(api_key=api_key)
 
 
