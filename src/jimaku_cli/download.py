@@ -1,3 +1,4 @@
+import logging
 import re
 from collections import Counter
 from pathlib import Path
@@ -102,6 +103,10 @@ def download(
     ] = False,
 ):
     """Download subtitles for the video files in a directory."""
+    logging.getLogger("ffsubsync").setLevel(
+        logging.INFO if verbose else logging.WARNING
+    )
+
     client: JimakuClient = ctx.obj
     counts: Counter[str] = Counter()
 
