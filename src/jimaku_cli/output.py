@@ -14,28 +14,27 @@ _OUTCOME_COLORS = {
     "download": typer.colors.GREEN,
     "skip": None,
     "missing": typer.colors.YELLOW,
-    "error": typer.colors.RED,
+    "failed": typer.colors.RED,
 }
 
 
-def status(outcome: str, subject: str, *details: str) -> None:
+def log_status(tag: str, message: str) -> None:
     """Report one file's outcome. Empty details drop out rather than pad the line."""
-    tag = typer.style(
-        f"[{outcome}]".ljust(_TAG_WIDTH),
-        fg=_OUTCOME_COLORS[outcome],
+    formatted_tag = typer.style(
+        f"[{tag}]".ljust(_TAG_WIDTH),
+        fg=_OUTCOME_COLORS[tag],
         bold=True,
-        dim=True if outcome == "skip" else None,
+        dim=True if tag == "skip" else None,
     )
-    detail = " ".join(part for part in details if part)
-    typer.echo(f"{tag} {subject} {detail}".rstrip(), err=True)
+    typer.echo(f"{formatted_tag} {message}".rstrip(), err=True)
+
+
+def log_error(message: str) -> None:
+    """Report a failure that ends the run, rather than one file's outcome."""
+    prefix = typer.style("error:", fg=typer.colors.RED, bold=True)
+    typer.echo(f"{prefix} {message}", err=True)
 
 
 def summary(tally: str) -> None:
     """The run's closing tally. Callers leave it out when there is nothing to tally."""
     typer.echo(f"summary: {tally}", err=True)
-
-
-def error(message: str) -> None:
-    """Report a failure that ends the run, rather than one file's outcome."""
-    prefix = typer.style("error:", fg=typer.colors.RED, bold=True)
-    typer.echo(f"{prefix} {message}", err=True)

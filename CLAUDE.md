@@ -284,7 +284,7 @@ Lines are tagged by **outcome**, and the tag alone decides whether the line prin
 | Outcome | Meaning | Default |
 |---|---|---|
 | download | a subtitle was written | shown |
-| error | a transfer, API, or filesystem failure, or a video whose episode number couldn't be read | shown |
+| failed | a transfer, API, or filesystem failure, or a video whose episode number couldn't be read | shown |
 | skip | a subtitle was already present | `--verbose` |
 | missing | no file matched for this episode | `--verbose` |
 
@@ -295,16 +295,18 @@ is the signal that everything is fine, and it only works if the routine outcomes
 know why.
 
 Each line names the file it applies to, so a mail read a week later is actionable without rerunning
-anything.
+anything. The tag is `failed` rather than `error` because a per-file outcome and a failure that ends
+the run are different things: `[failed]` names a file the run carried on past, while `error:` — no
+tag, no file — is the run stopping.
 
-A run closes with a `summary:` tally whenever that tally has anything in it — downloaded and errors
+A run closes with a `summary:` tally whenever that tally has anything in it — downloaded and failed
 by default, all four outcomes under `--verbose`. The set it counts is derived from the visibility
 tiers rather than listed beside them, so it cannot come to disagree with the lines above it, and a
 tally of nothing is omitted rather than printed as zeroes, which is what leaves a fully-downloaded
 season silent.
 
 Exit status follows the same split as visibility: `0` when every video was downloaded, skipped, or
-missing, and nonzero when an `error` occurred. A season the provider hasn't uploaded yet is not a
+missing, and nonzero when a video `failed`. A season the provider hasn't uploaded yet is not a
 failure — it prints nothing and exits `0`, so neither cron mail nor a `set -e` wrapper fires on it.
 Bad invocation also exits nonzero.
 
