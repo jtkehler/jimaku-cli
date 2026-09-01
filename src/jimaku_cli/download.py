@@ -12,7 +12,7 @@ import typer
 from . import postprocess
 from .api import FileEntry, JimakuClient, JimakuError
 from .config import config
-from .output import error, status, summary
+from .output import log_error, log_status, summary
 
 # Expected network, API, and filesystem failures. Caught per file so one bad
 # transfer does not abort the rest of a batch run.
@@ -25,14 +25,14 @@ LANG = "ja"
 
 # The tags worth a cron mail: something arrived, or something broke. The rest are
 # what you ask for when a run was silent and you would like to know why.
-SHOWN_OUTCOMES = frozenset({"download", "error"})
+SHOWN_OUTCOMES = frozenset({"download", "failed"})
 
 # Every outcome, in the order the summary counts them.
 OUTCOME_LABELS = (
     ("download", "downloaded"),
     ("skip", "skipped"),
     ("missing", "missing"),
-    ("error", "errors"),
+    ("failed", "failed"),
 )
 
 app = typer.Typer()
@@ -110,35 +110,36 @@ def download(
     client: JimakuClient = ctx.obj
     counts: Counter[str] = Counter()
 
-    def record(outcome: str, subject: str, *details: str) -> None:
+    def record_status(tag: str, message: str) -> None:
         """Count one file's outcome, and report it if its tag is one that prints."""
-        counts[outcome] += 1
-        if verbose or outcome in SHOWN_OUTCOMES:
-            status(outcome, subject, *details)
+        counts[tag] += 1
+        if verbose or tag in SHOWN_OUTCOMES:
+            log_status(tag, message)
 
     directory = directory.expanduser()
     if not directory.is_dir():
-        error(f"{directory} is not a directory")
+        log_error(f"{directory} is not a directory")
         raise typer.Exit(1)
 
     siblings = sorted(path for path in directory.iterdir() if path.is_file())
     videos = [path for path in siblings if path.suffix.lower() in VIDEO_EXTS]
     if not videos:
-        error(f"no video files in {directory}")
+        log_error(f"no video files in {directory}")
         raise typer.Exit(1)
 
     for video in videos:
         episode = parse_episode(video.name)
         if episode is None and guessit.guessit(video).get("type") == "episode":
-            record("error", video.name, "could not determine an episode number")
+            record_status(
+                "failed", f"{video.name} could not determine an episode number"
+            )
             continue
         try:
             remote_files = client.get_files(entry_id, episode)
         except TRANSFER_ERRORS as e:
-            record(
-                "error",
-                video.name,
-                f"could not retrieve files for episode {episode}: {e}",
+            record_status(
+                "failed",
+                f"{video.name} could not retrieve files for episode {episode}: {e}",
             )
             continue
 
@@ -146,12 +147,10 @@ def download(
         to_download = filtered if download_all else filtered[:1]
 
         if not to_download:
-            if release:
-                record(
-                    "missing", video.name, f"no matching release for episode {episode}"
-                )
-            else:
-                record("missing", video.name, f"no subtitle for episode {episode}")
+            record_status(
+                "missing",
+                f"{video.name} no {'matching release' if release else 'subtitle'} for episode {episode}",
+            )
             continue
 
         for file in to_download:
@@ -164,18 +163,18 @@ def download(
             # TODO: Deduplicate same-path candidates within a run so --overwrite
             # writes only the highest-ranked remote subtitle to each target.
             if output_path.exists() and not overwrite:
-                record("skip", file.name, target, "already present")
+                record_status("skip", f"{file.name} {target} already present")
                 continue
 
             try:
                 client.download_file(file.url, output_path)
             except TRANSFER_ERRORS as e:
-                record("error", file.name, target, f"download failed: {e}")
+                record_status("failed", f"{file.name} {target} download failed: {e}")
                 continue
             # download_file installs the completed file atomically, so reporting
             # only after it returns keeps this line from claiming a write that did
             # not land.
-            record("download", file.name, target)
+            record_status("download", f"{file.name} {target} downloaded")
 
             # Before aligning, not after. ffsubsync correlates cue timings against
             # the reference, and the cues this drops -- sound effects, music
@@ -188,7 +187,7 @@ def download(
                 # Parse errors, unreadable encodings and the filesystem: report
                 # and move on rather than discard a subtitle that downloaded.
                 except Exception as e:  # noqa: BLE001
-                    record("error", output_path.name, f"strip failed: {e}")
+                    record_status("failed", f"{output_path.name} strip failed: {e}")
 
             # Its own try, so a failed strip still gets aligned and a failed
             # align still leaves the stripped subtitle in place.
@@ -199,7 +198,7 @@ def download(
                 # its failure modes are not worth enumerating: report and move on
                 # rather than discard a subtitle that downloaded successfully.
                 except Exception as e:  # noqa: BLE001
-                    record("error", output_path.name, f"alignment failed: {e}")
+                    record_status("failed", f"{output_path.name} alignment failed: {e}")
 
     # The summary tallies whatever the run was willing to print, so it cannot drift
     # from the lines above it -- and a run that wrote nothing and broke nothing has
@@ -214,7 +213,7 @@ def download(
 
     # In step with visibility deliberately: an outcome not worth printing is not
     # worth failing over, and anything worth failing over gets printed.
-    raise typer.Exit(1 if counts["error"] else 0)
+    raise typer.Exit(1 if counts["failed"] else 0)
 
 
 def parse_episode(filename: str) -> int | None:

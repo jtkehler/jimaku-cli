@@ -160,7 +160,7 @@ def test_a_transfer_failure_is_reported_by_default(library):
 
     result = run(directory, client)
 
-    assert "[error]" in result.stderr
+    assert "[failed]" in result.stderr
     assert "503" in result.stderr
 
 
@@ -221,13 +221,13 @@ def test_an_unreadable_episode_number_exits_nonzero(library, tmp_path):
     assert result.exit_code != 0
 
 
-def test_a_strip_failure_is_reported_as_an_error(library, monkeypatch):
+def test_a_strip_failure_is_tagged_failed(library, monkeypatch):
     directory = library(1)
     monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("bad encoding")))
 
     result = run(directory, StubClient({1: [remote(1)]}), strip_ih=True)
 
-    assert "[error]" in result.stderr
+    assert "[failed]" in result.stderr
     assert "bad encoding" in result.stderr
 
 
@@ -250,7 +250,7 @@ def test_a_strip_failure_leaves_the_subtitle_in_place(library, monkeypatch):
     assert (directory / subtitle_name(1)).read_text(encoding="utf-8") == SUBTITLE_BODY
 
 
-def test_an_align_failure_is_reported_as_an_error(library, monkeypatch):
+def test_an_align_failure_is_tagged_failed(library, monkeypatch):
     directory = library(1)
     monkeypatch.setattr(
         postprocess, "sync_subtitle", _raising(RuntimeError("ffmpeg missing"))
@@ -258,7 +258,7 @@ def test_an_align_failure_is_reported_as_an_error(library, monkeypatch):
 
     result = run(directory, StubClient({1: [remote(1)]}), align=True)
 
-    assert "[error]" in result.stderr
+    assert "[failed]" in result.stderr
     assert "ffmpeg missing" in result.stderr
 
 
@@ -289,7 +289,7 @@ def test_a_run_that_wrote_something_ends_with_a_summary(library):
 
     result = run(directory, StubClient({1: [remote(1)]}))
 
-    assert "summary: 1 downloaded, 0 errors" in result.stderr
+    assert "summary: 1 downloaded, 0 failed" in result.stderr
 
 
 def test_the_summary_counts_every_outcome_when_verbose(library):
@@ -298,7 +298,7 @@ def test_the_summary_counts_every_outcome_when_verbose(library):
 
     result = run(directory, StubClient({1: [remote(1)], 2: [remote(2)]}), "--verbose")
 
-    assert "summary: 1 downloaded, 1 skipped, 0 missing, 0 errors" in result.stderr
+    assert "summary: 1 downloaded, 1 skipped, 0 missing, 0 failed" in result.stderr
 
 
 def test_a_missing_api_key_is_reported_on_stderr(monkeypatch):

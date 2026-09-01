@@ -1,6 +1,6 @@
 import typer
 
-from .output import error
+from .output import log_error
 
 app = typer.Typer()
 
@@ -12,5 +12,5 @@ def search(ctx: typer.Context, query: str):
         response = ctx.obj.search_entries(query=query)
         print(response)
     except Exception as e:
-        error(f"API connection failed: {e}")
+        log_error(f"API connection failed: {e}")
         raise typer.Exit(1)
