@@ -78,7 +78,7 @@ def download(
     download_all: Annotated[
         bool,
         typer.Option(
-            "--all",
+            "--all/--no-all",
             help="Download all matching subtitle files. When disabled, only the best match is downloaded",
         ),
     ] = download_config.get("all", False),
@@ -152,6 +152,9 @@ def download(
                 output_name(video, file.name, remote_release) if rename else file.name
             )
             output_path = directory / output_filename
+            # Normalize before both skip detection and processing; ffsubsync
+            # derives its input format from the case-sensitive extension.
+            output_path = output_path.with_suffix(output_path.suffix.lower())
             # TODO: Deduplicate same-path candidates within a run so --overwrite
             # writes only the highest-ranked remote subtitle to each target.
             if output_path.exists() and not overwrite:

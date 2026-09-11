@@ -104,7 +104,7 @@ def test_transfer_diagnostics_use_filename_instead_of_signed_url(
         client.download_file(url, destination)
     assert calls == [(url, {"timeout": 10.0, "stream": True})]
     assert destination.read_bytes() == b"subtitle content"
-    assert not destination.with_suffix(".srt.part").exists()
+    assert list(tmp_path.iterdir()) == [destination]
     text = capsys.readouterr().err
     assert "GET subtitle Show.srt -> 200" in text
     assert all(
@@ -143,8 +143,7 @@ def test_failed_transfer_preserves_original_and_cleanup(
     assert destination.read_bytes() == b"original"
     text = capsys.readouterr().err
     assert "private" not in text and "sensitive request details" not in text
-    if failure != "install":
-        assert not destination.with_suffix(".srt.part").exists()
+    assert list(tmp_path.iterdir()) == [destination]
 
 
 @pytest.mark.parametrize("verbose", [False, True])
@@ -157,5 +156,6 @@ def test_diagnostics_do_not_replace_requests_invalid_url_error(tmp_path, verbose
         pytest.raises(requests.exceptions.InvalidURL),
     ):
         JimakuClient("secret-key").download_file("http://[bad", destination)
-    assert not partial.exists()
+    assert partial.read_bytes() == b"old partial"
+    assert list(tmp_path.iterdir()) == [partial]
     assert not destination.exists()

@@ -10,6 +10,7 @@ own schema marks none of its keys required.
 import json
 import logging
 import os
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -186,11 +187,11 @@ class JimakuClient:
         """Fetch a file entry's URL to `dest`, atomically.
 
         `FileEntry.url` is absolute, so this bypasses `_get`'s base-URL join and its
-        JSON decode. The write goes to a sibling `.part` and is renamed into place, so
+        JSON decode. The write goes to a unique sibling `.part`, then replaces `dest`, so
         a run killed partway through cannot leave a truncated subtitle behind — which
         would otherwise count as an existing subtitle and be skipped forever after.
         """
-        partial = dest.with_name(dest.name + ".part")
+        partial = None
         logger.debug("GET subtitle %s", dest.name)
         try:
             with self.session.get(url, timeout=self.timeout, stream=True) as response:
@@ -199,13 +200,21 @@ class JimakuClient:
                     raise JimakuError(
                         response.status_code, response.reason or "request failed"
                     )
-                with partial.open("wb") as f:
+                while True:
+                    candidate = dest.with_name(f".jimaku-{secrets.token_hex(8)}.part")
+                    try:
+                        f = candidate.open("xb")
+                    except FileExistsError:
+                        continue
+                    partial = candidate
+                    break
+                with f:
                     for chunk in response.iter_content(chunk_size=65536):
                         f.write(chunk)
-        except BaseException:
-            partial.unlink(missing_ok=True)
-            raise
-        os.replace(partial, dest)
+            os.replace(partial, dest)
+        finally:
+            if partial is not None:
+                partial.unlink(missing_ok=True)
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Send a GET and return the decoded JSON body.

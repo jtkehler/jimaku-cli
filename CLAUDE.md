@@ -25,8 +25,8 @@ left alone. Non-interactive and safe to re-run.
 |---|---|
 | `--id N` | jimaku entry ID (required) |
 | `--release PATTERN` | Repeatable; order is significant. Matched against the release group or streaming service in the remote filename, case-insensitively. Prefix with `re:` for a regex. Omit to accept anything. |
-| `--all` | Download every matching release, each to its own file. Off by default: only the best match is written. |
-| `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename. |
+| `--all` / `--no-all` | Download every matching release, each to its own file. Off by default: only the best match is written. `--no-all` overrides a true config default. |
+| `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename apart from lowercasing its extension. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
 | `--align` | Time-align the subtitle against the video's audio, with ffsubsync. |
 | `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as halfwidth-parenthesised kana after kanji or as HTML `<ruby>`.

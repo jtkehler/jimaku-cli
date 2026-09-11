@@ -2,6 +2,17 @@
 
 Download Japanese subtitles from [jimaku.cc](https://jimaku.cc) alongside local videos.
 
+## Download behavior
+
+Downloaded subtitle extensions are always lowercase, with or without `--rename`.
+The normalized path is also used for skip-existing checks and post-processing;
+existing local files are not renamed.
+
+`--all` downloads every matching candidate; `--no-all` selects only the best match,
+including when `[download] all = true` is set in the config file.
+
+See [known issues](docs/known-issues.md) for deferred review findings and fix research.
+
 ## Output and verbosity
 
 ```sh
