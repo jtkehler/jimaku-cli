@@ -35,8 +35,8 @@ sound effects and whispered dialogue, and ruby is set as positioned text rather 
 so a fullwidth group is spoken or annotated until shown otherwise — at the cost of the 78 corpus
 readings written `姉弟（きょうだい）`. Reaches `.srt`, `.ass` and `.ssa`; `.vtt` and `.sub` are not
 processed. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
-| `--verbose` / `-v` | Report skipped and missing episodes as well. Off by default, which leaves
-only the outcomes a cron mail is worth reading. |
+| `--quiet` / `-q` | Show only downloads, their basic processing results, and errors. Skipped/missing-only runs stay silent. |
+| `--verbose` / `-v` | Add diagnostic logs and caught-failure tracebacks. |
 
 ### `jimaku search [DIRECTORY]`
 
@@ -150,8 +150,8 @@ enough to be truncated to fit the filesystem otherwise loses exactly the tail th
 neighbour.
 
 **One bad file must not abort the batch.** Network, API, and filesystem failures are handled per
-video: report, count it, continue to the next. Post-processing failure likewise must not fail the
-run or discard a subtitle that already downloaded successfully.
+video: report, count it, continue to the next. Post-processing failure likewise must not abort the
+batch or discard a subtitle that already downloaded successfully; it still makes the run exit nonzero.
 
 **Parentheses are candidates, not proof of hearing-impaired text.** Japanese providers use both
 halfwidth and fullwidth parentheses for speaker labels, sound effects and ruby, but also for real
@@ -275,44 +275,51 @@ extension, followed by atomic replacement.
 
 ## Logging and exit status
 
-**Everything the tool says about its own progress goes to stderr.** `download` writes nothing to
-stdout at all; `search`'s stdout is the emitted command alone. Errors are progress reporting too, so
-they go to stderr with the rest.
+**Download writes only to stderr.** Stdout is reserved for command payloads.
+Default runs show every outcome. Use `--quiet/-q` for cron: a run with only
+skipped/missing files stays silent, including no summary. Downloads and errors
+remain visible in quiet mode.
 
-Lines are tagged by **outcome**, and the tag alone decides whether the line prints:
+| Verbosity | Output |
+|---|---|
+| `-q` / `--quiet` | Downloads, failures, basic strip results, and alignment start/result |
+| Default | All outcomes, strip cue counts, and available alignment offset/scale |
+| `-v` / `--verbose` | Also Jimaku requests/statuses, ffsubsync logs, and caught-failure tracebacks |
 
-| Outcome | Meaning | Default |
-|---|---|---|
-| download | a subtitle was written | shown |
-| failed | a transfer, API, or filesystem failure, or a video whose episode number couldn't be read | shown |
-| skip | a subtitle was already present | `--verbose` |
-| missing | no file matched for this episode | `--verbose` |
+Both flags are booleans and belong to `download`. Combining quiet and verbose
+is a usage error (exit 2), rejected before file discovery or API
+requests. The root command's API-key prerequisite still applies. Verbosity never
+changes which files are processed.
 
-The default set is the one worth a cron mail: something arrived, or something broke. A scheduled run
-over a season that is fully downloaded and has nothing new should print nothing whatsoever — silence
-is the signal that everything is fine, and it only works if the routine outcomes stay quiet.
-`--verbose` adds skipped and missing, which is what you want when a run is silent and you'd like to
-know why.
+`Reporter` in `output.py` takes named `quiet` and `verbose` booleans and owns outcome
+counts and formatting. Diagnostic logging is enabled with a `verbose` boolean;
+there are no numeric reporting levels. Outcomes are plain strings:
+`download`, `skip`, `missing`, and `failed`. Summaries use the same visible outcomes as
+individual lines, preserving order and zero counts once anything visible happened.
+Counts describe operations: a saved subtitle with failed stripping and alignment counts
+as one download and two failures. Processing details never add outcome counts.
+Any failed operation exits nonzero; skipped/missing files alone exit zero.
+`error:` reports a fatal command error; `[failed]` reports a per-file failure.
 
-Each line names the file it applies to, so a mail read a week later is actionable without rerunning
-anything. The tag is `failed` rather than `error` because a per-file outcome and a failure that ends
-the run are different things: `[failed]` names a file the run carried on past, while `error:` — no
-tag, no file — is the run stopping.
+`strip_ih` distinguishes changed, unchanged, unsupported, and drawing-containing SRTs
+left intact. Default and verbose output separate modified and removed cue counts.
+Alignment prints
+`ffsubsync: aligning…` before running and `complete` only after atomic installation.
+Default terminal runs with `--align` use ffsubsync's own progress bar. Quiet, verbose,
+redirected output, and `TERM=dumb` use only start/result lines. No custom progress
+callbacks or milestones.
 
-A run closes with a `summary:` tally whenever that tally has anything in it — downloaded and failed
-by default, all four outcomes under `--verbose`. The set it counts is derived from the visibility
-tiers rather than listed beside them, so it cannot come to disagree with the lines above it, and a
-tally of nothing is omitted rather than printed as zeroes, which is what leaves a fully-downloaded
-season silent.
+Keep output handling simple: Typer handles human lines, and standard logging handles
+diagnostics. `output.py` temporarily configures `jimaku_cli`, `ffsubsync`, and `srt`,
+then restores those three loggers. It does not traverse or reset the logging tree.
+A formatter uses standard log level/name prefixes and redacts the configured API key.
+Tracebacks omit locals and retain their normal layout.
+API debug calls log the endpoint and parameters/status; transfers log the destination
+filename, never signed URLs, headers, or bodies. No timing or byte-count bookkeeping.
 
-Exit status follows the same split as visibility: `0` when every video was downloaded, skipped, or
-missing, and nonzero when a video `failed`. A season the provider hasn't uploaded yet is not a
-failure — it prints nothing and exits `0`, so neither cron mail nor a `set -e` wrapper fires on it.
-Bad invocation also exits nonzero.
-
-The two rules stay in step deliberately: an outcome that isn't worth printing isn't worth failing
-over, and anything worth failing over gets printed. If a new outcome is added later, it should be
-placed in both tiers at once or in neither.
+Control characters in human lines are escaped. Nonempty `NO_COLOR`, `TERM=dumb`, and
+redirected output disable color. No module configures logging at import time; ffsubsync
+loads lazily under a small guard against its `basicConfig` side effect.
 
 ## Current state
 
@@ -328,8 +335,11 @@ emitted command becomes a claim about what just happened rather than the thing t
 two can drift. The accumulation design removes what would otherwise be the deciding constraint: the
 release list fully determines the outcome, so a second pass reproduces the session exactly.
 
-`--align` runs ffsubsync over the subtitle that just downloaded, replacing it in place; ffsubsync's
-own INFO logging and progress bar go to stderr and are not yet quieted for a cron run. `--strip-ih`
+`--align` runs ffsubsync over the subtitle that just downloaded, replacing it in place. The CLI
+uses the native progress bar in terminals and suppresses it for cron/diagnostic output by
+temporarily replacing only `ffsubsync.speech_transformers.tqdm`. This private adapter is coupled
+to ffsubsync 0.5.1 and must be revisited on upgrades; its binding is restored even on failure.
+ffsubsync loads lazily under a guard against its import-time logging setup. `--strip-ih`
 runs before it, so ffsubsync aligns the stripped file. The cues stripping removes are the ones with
 no speech under them, so their intervals are noise in the correlation, and nothing that survives
 moves — measured against an embedded reference track, stripping first raises the share of cue time

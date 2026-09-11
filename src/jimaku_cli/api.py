@@ -8,6 +8,7 @@ own schema marks none of its keys required.
 """
 
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,9 @@ class JimakuClient:
         """
         return [
             FileEntry.from_json(item)
-            for item in self._get(f"/api/entries/{entry_id}/files", {"episode": episode})
+            for item in self._get(
+                f"/api/entries/{entry_id}/files", {"episode": episode}
+            )
         ]
 
     def search_entries(
@@ -186,8 +191,10 @@ class JimakuClient:
         would otherwise count as an existing subtitle and be skipped forever after.
         """
         partial = dest.with_name(dest.name + ".part")
+        logger.debug("GET subtitle %s", dest.name)
         try:
             with self.session.get(url, timeout=self.timeout, stream=True) as response:
+                logger.debug("GET subtitle %s -> %s", dest.name, response.status_code)
                 if not response.ok:
                     raise JimakuError(
                         response.status_code, response.reason or "request failed"
@@ -208,11 +215,17 @@ class JimakuClient:
         deliberately: the callers above name the real response type and pass the body
         to the matching `from_json`, the only place the shape is ever asserted.
         """
+        logger.debug(
+            "GET %s %s",
+            path,
+            {key: value for key, value in (params or {}).items() if value is not None},
+        )
         response = self.session.get(
             self.base_url.rstrip("/") + path,
             params=params,
             timeout=self.timeout,
         )
+        logger.debug("GET %s -> %s", path, response.status_code)
         if not response.ok:
             try:
                 body = response.json()

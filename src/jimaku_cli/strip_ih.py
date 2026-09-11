@@ -7,12 +7,22 @@ import shutil
 import tempfile
 import unicodedata
 from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import pysubs2
 from pysubs2 import SSAEvent
 
-__all__ = ["strip_ih"]
+__all__ = ["StripResult", "strip_ih"]
+
+
+@dataclass(frozen=True)
+class StripResult:
+    status: Literal["updated", "unchanged", "unsupported", "preserved"]
+    modified_cues: int = 0
+    removed_cues: int = 0
+
 
 # Japanese SDH uses fullwidth parentheses for speaker IDs and sound effects, but
 # Netflix also prescribes the same delimiters for whispered or mouthed dialogue.
@@ -200,7 +210,7 @@ NAME_MARKERS = re.compile(
 )
 
 
-def strip_ih(subtitle: Path) -> None:
+def strip_ih(subtitle: Path) -> StripResult:
     """Remove hearing-impaired annotations and ruby readings from a subtitle.
 
     Drops high-confidence speaker labels, sound effects, bare music markers,
@@ -211,7 +221,7 @@ def strip_ih(subtitle: Path) -> None:
     formats = {".ass": "ass", ".ssa": "ssa", ".srt": "srt"}
     format_ = formats.get(subtitle.suffix.casefold())
     if format_ is None:
-        return
+        return StripResult("unsupported")
 
     encoding = subtitle_encoding(subtitle)
     subs = pysubs2.load(
@@ -222,12 +232,14 @@ def strip_ih(subtitle: Path) -> None:
     )
     # The SRT writer omits drawing events. Leave such an unusual file whole.
     if format_ == "srt" and any(event.is_drawing for event in subs):
-        return
+        return StripResult("preserved")
 
     labels = speaker_labels(
         strip_html_ruby(event.text) for event in subs if event.is_text
     )
     changed = False
+    modified_cues = 0
+    removed_cues = 0
     kept: list[SSAEvent] = []
     for event in subs:
         # Comments and SubStation drawings are not dialogue.
@@ -248,10 +260,14 @@ def strip_ih(subtitle: Path) -> None:
             changed = True
         if stripped == original or visible(stripped):
             kept.append(event)
+            if stripped != original:
+                modified_cues += 1
+        else:
+            removed_cues += 1
 
     # Avoid normalizing files that did not need any stripping.
     if not changed:
-        return
+        return StripResult("unchanged")
 
     ensure_serializable_timestamps(kept, format_)
     subs.events = kept
@@ -267,6 +283,7 @@ def strip_ih(subtitle: Path) -> None:
         os.replace(temporary, subtitle)
     finally:
         temporary.unlink(missing_ok=True)
+    return StripResult("updated", modified_cues, removed_cues)
 
 
 def subtitle_encoding(subtitle: Path) -> str:

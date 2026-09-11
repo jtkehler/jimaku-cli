@@ -1,6 +1,5 @@
 import logging
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -12,7 +11,9 @@ import typer
 from . import postprocess
 from .api import FileEntry, JimakuClient, JimakuError
 from .config import config
-from .output import log_error, log_status, summary
+from .output import Reporter, diagnostic_session, log_error
+
+logger = logging.getLogger(__name__)
 
 # Expected network, API, and filesystem failures. Caught per file so one bad
 # transfer does not abort the rest of a batch run.
@@ -22,18 +23,6 @@ VIDEO_EXTS = frozenset({".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts", 
 SUBTITLE_EXTS = frozenset({".srt", ".ass", ".ssa", ".vtt", ".sub"})
 
 LANG = "ja"
-
-# The tags worth a cron mail: something arrived, or something broke. The rest are
-# what you ask for when a run was silent and you would like to know why.
-SHOWN_OUTCOMES = frozenset({"download", "failed"})
-
-# Every outcome, in the order the summary counts them.
-OUTCOME_LABELS = (
-    ("download", "downloaded"),
-    ("skip", "skipped"),
-    ("missing", "missing"),
-    ("failed", "failed"),
-)
 
 app = typer.Typer()
 
@@ -93,28 +82,29 @@ def download(
             help="Download all matching subtitle files. When disabled, only the best match is downloaded",
         ),
     ] = download_config.get("all", False),
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "--quiet",
+            "-q",
+            help="Show only downloads, their basic processing results, and errors.",
+        ),
+    ] = False,
     verbose: Annotated[
         bool,
         typer.Option(
             "--verbose",
             "-v",
-            help="Report skipped and missing episodes as well.",
+            help="Add diagnostic logs and tracebacks for caught failures.",
         ),
     ] = False,
 ):
     """Download subtitles for the video files in a directory."""
-    logging.getLogger("ffsubsync").setLevel(
-        logging.INFO if verbose else logging.WARNING
-    )
-
+    if quiet and verbose:
+        raise typer.BadParameter("--quiet/-q cannot be combined with --verbose/-v.")
     client: JimakuClient = ctx.obj
-    counts: Counter[str] = Counter()
-
-    def record_status(tag: str, message: str) -> None:
-        """Count one file's outcome, and report it if its tag is one that prints."""
-        counts[tag] += 1
-        if verbose or tag in SHOWN_OUTCOMES:
-            log_status(tag, message)
+    reporter = Reporter(quiet=quiet, verbose=verbose)
+    ctx.with_resource(diagnostic_session(verbose=verbose, api_key=client.api_key))
 
     directory = directory.expanduser()
     if not directory.is_dir():
@@ -130,26 +120,29 @@ def download(
     for video in videos:
         episode = parse_episode(video.name)
         if episode is None and guessit.guessit(video).get("type") == "episode":
-            record_status(
-                "failed", f"{video.name} could not determine an episode number"
+            reporter.record(
+                "failed", video.name, "could not determine an episode number"
             )
             continue
         try:
             remote_files = client.get_files(entry_id, episode)
         except TRANSFER_ERRORS as e:
-            record_status(
+            reporter.record(
                 "failed",
-                f"{video.name} could not retrieve files for episode {episode}: {e}",
+                video.name,
+                f"could not retrieve files for episode {episode}: {e}",
             )
+            logger.debug("Listing failed for %s", video.name, exc_info=True)
             continue
 
         filtered = filter_release(remote_files, release)
         to_download = filtered if download_all else filtered[:1]
 
         if not to_download:
-            record_status(
+            reporter.record(
                 "missing",
-                f"{video.name} no {'matching release' if release else 'subtitle'} for episode {episode}",
+                video.name,
+                f"no {'matching release' if release else 'subtitle'} for episode {episode}",
             )
             continue
 
@@ -159,22 +152,31 @@ def download(
                 output_name(video, file.name, remote_release) if rename else file.name
             )
             output_path = directory / output_filename
-            target = "" if output_path.name == file.name else f"-> {output_path.name}"
             # TODO: Deduplicate same-path candidates within a run so --overwrite
             # writes only the highest-ranked remote subtitle to each target.
             if output_path.exists() and not overwrite:
-                record_status("skip", f"{file.name} {target} already present")
+                reporter.record(
+                    "skip", file.name, "already present", target=output_path.name
+                )
                 continue
 
             try:
                 client.download_file(file.url, output_path)
             except TRANSFER_ERRORS as e:
-                record_status("failed", f"{file.name} {target} download failed: {e}")
+                reporter.record(
+                    "failed",
+                    file.name,
+                    f"download failed: {e}",
+                    target=output_path.name,
+                )
+                logger.debug("Download failed for %s", file.name, exc_info=True)
                 continue
             # download_file installs the completed file atomically, so reporting
             # only after it returns keeps this line from claiming a write that did
             # not land.
-            record_status("download", f"{file.name} {target} downloaded")
+            reporter.record(
+                "download", file.name, "downloaded", target=output_path.name
+            )
 
             # Before aligning, not after. ffsubsync correlates cue timings against
             # the reference, and the cues this drops -- sound effects, music
@@ -183,37 +185,40 @@ def download(
             # survives moves, so no true anchor is lost either way.
             if strip_ih:
                 try:
-                    postprocess.strip_ih(output_path)
+                    strip_result = postprocess.strip_ih(output_path)
                 # Parse errors, unreadable encodings and the filesystem: report
                 # and move on rather than discard a subtitle that downloaded.
-                except Exception as e:  # noqa: BLE001
-                    record_status("failed", f"{output_path.name} strip failed: {e}")
+                except Exception as e:
+                    reporter.record("failed", output_path.name, f"strip failed: {e}")
+                    logger.debug(
+                        "Stripping failed for %s", output_path.name, exc_info=True
+                    )
+                else:
+                    reporter.stripped(output_path.name, strip_result)
 
             # Its own try, so a failed strip still gets aligned and a failed
             # align still leaves the stripped subtitle in place.
             if align:
+                reporter.step(output_path.name, "ffsubsync", "aligning…")
                 try:
-                    postprocess.sync_subtitle(output_path, video)
+                    aligned = postprocess.sync_subtitle(
+                        output_path, video, show_progress=reporter.interactive
+                    )
                 # ffsubsync reaches ffmpeg, the filesystem and a stack of parsers, so
                 # its failure modes are not worth enumerating: report and move on
                 # rather than discard a subtitle that downloaded successfully.
-                except Exception as e:  # noqa: BLE001
-                    record_status("failed", f"{output_path.name} alignment failed: {e}")
+                except Exception as e:
+                    reporter.record(
+                        "failed", output_path.name, f"alignment failed: {e}"
+                    )
+                    logger.debug(
+                        "Alignment failed for %s", output_path.name, exc_info=True
+                    )
+                else:
+                    reporter.aligned(output_path.name, aligned)
 
-    # The summary tallies whatever the run was willing to print, so it cannot drift
-    # from the lines above it -- and a run that wrote nothing and broke nothing has
-    # an empty tally and stays silent.
-    tallied = [
-        (outcome, label)
-        for outcome, label in OUTCOME_LABELS
-        if verbose or outcome in SHOWN_OUTCOMES
-    ]
-    if any(counts[outcome] for outcome, _ in tallied):
-        summary(", ".join(f"{counts[outcome]} {label}" for outcome, label in tallied))
-
-    # In step with visibility deliberately: an outcome not worth printing is not
-    # worth failing over, and anything worth failing over gets printed.
-    raise typer.Exit(1 if counts["failed"] else 0)
+    reporter.print_summary()
+    raise typer.Exit(reporter.exit_code)
 
 
 def parse_episode(filename: str) -> int | None:

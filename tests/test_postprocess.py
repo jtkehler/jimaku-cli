@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pysubs2
 import pytest
 
+from jimaku_cli import postprocess
 from jimaku_cli.postprocess import AlignError, sync_subtitle
 from jimaku_cli.strip_ih import (
     music_marker_only,
@@ -606,6 +609,63 @@ class StubParser:
         return Path(arguments[arguments.index("-o") + 1])
 
 
+def test_strip_result_counts_modified_and_removed_cues_separately(tmp_path):
+    subtitle = tmp_path / "Show.srt"
+    write_srt(subtitle, ["（信子）おはよう", "♪～", "そのまま"])
+    result = strip_ih(subtitle)
+    assert (result.status, result.modified_cues, result.removed_cues) == (
+        "updated",
+        1,
+        1,
+    )
+    assert load_texts(subtitle) == ["おはよう", "そのまま"]
+    before = subtitle.read_bytes()
+    result = strip_ih(subtitle)
+    assert (result.status, result.modified_cues, result.removed_cues) == (
+        "unchanged",
+        0,
+        0,
+    )
+    assert subtitle.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "suffix, text, status",
+    [
+        (".vtt", "WEBVTT", "unsupported"),
+        (
+            ".srt",
+            "1\n00:00:01,000 --> 00:00:02,000\n{\\p1}m 0 0 l 10 10\n",
+            "preserved",
+        ),
+    ],
+)
+def test_strip_result_explains_intentionally_unprocessed_files(
+    tmp_path, suffix, text, status
+):
+    subtitle = tmp_path / ("Show" + suffix)
+    subtitle.write_text(text)
+    result = strip_ih(subtitle)
+    assert result.status == status
+    assert result.modified_cues == result.removed_cues == 0
+    assert subtitle.read_text() == text
+
+
+def test_strip_install_failure_preserves_original_and_cleans_up(tmp_path, monkeypatch):
+    subtitle = tmp_path / "Show.srt"
+    write_srt(subtitle, ["（信子）おはよう"])
+    before = subtitle.read_bytes()
+
+    def fail_replace(source, destination):
+        raise OSError("install failed")
+
+    monkeypatch.setattr("jimaku_cli.strip_ih.os.replace", fail_replace)
+    with pytest.raises(OSError, match="install failed"):
+        strip_ih(subtitle)
+    assert subtitle.read_bytes() == before
+    assert not list(tmp_path.glob(".stripih-*"))
+
+
 def test_sync_subtitle_replaces_from_a_written_sibling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -615,14 +675,15 @@ def test_sync_subtitle_replaces_from_a_written_sibling(
     video = tmp_path / "video.mkv"
     video.touch()
 
-    monkeypatch.setattr("jimaku_cli.postprocess.make_parser", StubParser)
-
     def run(output: Path) -> dict[str, bool]:
         assert output.suffix == ".srt"
         output.write_text("synced")
         return {"sync_was_successful": True}
 
-    monkeypatch.setattr("jimaku_cli.postprocess.ffsubsync.run", run)
+    monkeypatch.setattr(
+        "jimaku_cli.postprocess._load_ffsubsync",
+        lambda: (SimpleNamespace(run=run), StubParser),
+    )
 
     sync_subtitle(subtitle, video)
 
@@ -638,10 +699,12 @@ def test_sync_subtitle_does_not_replace_with_an_empty_temporary(
     subtitle.write_text("original")
     video = tmp_path / "video.mkv"
     video.touch()
-    monkeypatch.setattr("jimaku_cli.postprocess.make_parser", StubParser)
     monkeypatch.setattr(
-        "jimaku_cli.postprocess.ffsubsync.run",
-        lambda _args: {"sync_was_successful": True},
+        "jimaku_cli.postprocess._load_ffsubsync",
+        lambda: (
+            SimpleNamespace(run=lambda _: {"sync_was_successful": True}),
+            StubParser,
+        ),
     )
 
     with pytest.raises(AlignError):
@@ -663,10 +726,73 @@ def test_sync_subtitle_cleans_up_when_argument_parsing_fails(
         def parse_args(self, _arguments: list[str]) -> None:
             raise RuntimeError("bad arguments")
 
-    monkeypatch.setattr("jimaku_cli.postprocess.make_parser", BrokenParser)
+    monkeypatch.setattr(
+        "jimaku_cli.postprocess._load_ffsubsync",
+        lambda: (None, BrokenParser),
+    )
 
     with pytest.raises(RuntimeError, match="bad arguments"):
         sync_subtitle(subtitle, video)
 
     assert subtitle.read_text() == "original"
     assert not list(tmp_path.glob(".ffsubsync-*"))
+
+
+@pytest.mark.parametrize(
+    "offset, scale, expected",
+    [
+        (0.25, 1.001, (0.25, 1.001)),
+        (float("nan"), float("inf"), (None, None)),
+        (None, "unknown", (None, None)),
+    ],
+)
+def test_alignment_returns_available_metadata(
+    tmp_path,
+    monkeypatch,
+    offset,
+    scale,
+    expected,
+):
+    subtitle = tmp_path / "Show.srt"
+    subtitle.write_text("original")
+
+    def backend(output):
+        output.write_text("synced")
+        return {
+            "sync_was_successful": True,
+            "offset_seconds": offset,
+            "framerate_scale_factor": scale,
+        }
+
+    monkeypatch.setattr(
+        postprocess,
+        "_load_ffsubsync",
+        lambda: (SimpleNamespace(run=backend), StubParser),
+    )
+    monkeypatch.setattr(postprocess, "_silence_native_progress", nullcontext)
+    result = sync_subtitle(subtitle, tmp_path / "Show.mkv", show_progress=False)
+    assert (result.offset_seconds, result.framerate_scale_factor) == expected
+    assert subtitle.read_text() == "synced"
+    assert not list(tmp_path.glob(".ffsubsync-*"))
+
+
+def test_native_progress_suppression_is_local_and_restored_on_interrupt(capsys):
+    postprocess._load_ffsubsync()
+    import ffsubsync.speech_transformers as speech
+    import tqdm
+
+    original_binding = speech.tqdm
+    original_factory = tqdm.tqdm
+    with (
+        pytest.raises(KeyboardInterrupt),
+        postprocess._silence_native_progress(),
+        speech.tqdm.tqdm(total=4, disable=False) as bar,
+    ):
+        bar.update(4)
+        assert bar.disable
+        assert tqdm.tqdm is original_factory
+        raise KeyboardInterrupt
+    assert speech.tqdm is original_binding
+    assert tqdm.tqdm is original_factory
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
