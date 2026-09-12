@@ -109,23 +109,39 @@ def search(
     # Numbered episodes first; numberless movies/specials last, ordered by name.
     videos.sort(key=lambda item: (item[1] is None, item[1] or 0, item[0].name))
     first = videos[0][0]
-    parsed = anitopy.parse(first.name) or {}
-    query = parsed.get("anime_title") or guessit.guessit(first.name).get("title")
-    if not isinstance(query, str) or not query.strip():
+    titles: list[object] = [
+        (anitopy.parse(first.name) or {}).get("anime_title"),
+        guessit.guessit(first.name).get("title"),
+    ]
+    if not anime:
+        titles.reverse()
+    queries: list[str] = []
+    for title in titles:
+        if isinstance(title, str) and title.strip() and title not in queries:
+            queries.append(title)
+    if not queries:
         log_error(f"could not determine a title from {first.name}")
-        raise typer.Exit(1)
-    typer.echo(f"Searching for {inline(query)}…", err=True)
-    try:
-        entries = client.search_entries(query=query, anime=anime)
-    except TRANSFER_ERRORS as exc:
-        log_error(f"could not search entries: {exc}")
-        raise typer.Exit(1) from exc
-    if not entries:
+    while True:
+        if queries:
+            query: str = queries.pop(0)
+        else:
+            # Keep the prompt and input echo out of the command payload.
+            with redirect_stdout(sys.stderr):
+                query = typer.prompt("Search title", err=True).strip()
+            if not query:
+                continue
+        typer.echo(f"Searching for {inline(query)}…", err=True)
+        try:
+            entries = client.search_entries(query=query, anime=anime)
+        except TRANSFER_ERRORS as exc:
+            log_error(f"could not search entries: {exc}")
+            raise typer.Exit(1) from exc
+        if entries:
+            break
         message = f"no entries found for {query!r}"
         if anime:
             message += ". Use --no-anime to search live action."
         log_error(message)
-        raise typer.Exit(1)
     entry = entries[
         choose("Entry", [f"{entry.name} (ID {entry.id})" for entry in entries])
     ]

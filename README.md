@@ -18,6 +18,15 @@ video's parsed title, then uses numbered Typer prompts to choose an entry and a
 subtitle release. Videos are visited in numeric episode order, with numberless
 videos last (sorted by filename); movies use an unfiltered file listing.
 
+Title parsing starts with Anitopy for anime and GuessIt for `--no-anime`. If that
+search returns no entries, it tries the other parser's title once, skipping empty
+or identical titles. If neither finds an entry, or neither produces a usable title,
+`Search title:` lets you enter a query yourself. Manual searches keep the same
+anime/live-action filter and repeat until there are results or you cancel with
+Ctrl-C or EOF. API/network errors stop the command rather than trying more titles.
+The first nonempty result list goes to entry selection; entries are never chosen
+automatically. Episode parsing and release matching are unchanged.
+
 Once a release covers an episode, no further choice is needed for that episode.
 The next gap prompts for a fallback release, building the same priority list that
 `download` uses. Archives and other non-subtitle files are excluded. If a release

@@ -1,7 +1,7 @@
 # jimaku-cli
 
-Downloads Japanese subtitle files from [jimaku.cc](https://jimaku.cc) into local anime
-directories.
+Downloads Japanese subtitle files from [jimaku.cc](https://jimaku.cc) alongside local
+anime and live-action videos.
 
 The tool is used two ways, and both matter equally:
 
@@ -43,12 +43,13 @@ processed. ASS furigana set as separately positioned text under a ruby-named sty
 
 An interactive wizard, and the front door for a series being set up for the first time. Its job is
 to **construct** the release list that `download` needs, asking only about episodes whose answer
-isn't already determined.
+isn't already determined. The directory defaults to `.`.
 
 A session:
 
-1. Sort the directory's videos by episode number.
-2. Search entries for the first episode's parsed title; prompt to choose one.
+1. Sort the directory's videos by episode number, with numberless videos last and filenames
+   breaking ties.
+2. Search entries using the first video's parsed title; prompt to choose an entry.
 3. List that episode's files; prompt to choose one.
 4. Record the chosen file's release as the first pattern, falling back to a regex synthesized from
    the filename when the release can't be parsed.
@@ -56,28 +57,54 @@ A session:
    episode where nothing matches, prompt again and append the chosen release as the next priority.
    Continue to the end of the directory.
 6. Emit the `jimaku download` command: the entry ID, the accumulated release list in priority
-   order, and the pass-through options.
+   order, and the effective handling options. With `--download`, then call the existing downloader
+   directly with those values; do not execute the emitted shell string.
 
-The number of prompts is therefore the number of distinct releases the season actually needs, not
-the number of episodes. Priority order is discovery order — the release that covers episode 1 comes
-first, whatever fills the first gap comes second.
+Release prompts correspond to the distinct releases the season actually needs, not the number of
+episodes. Priority order is discovery order — the release that covers episode 1 comes first,
+whatever fills the first gap comes second.
+
+**Title search is genre-first, then one alternate, then user input.** Use Anitopy's title first
+for anime and GuessIt's first for `--no-anime`. If that title is unusable or the search returns no
+entries, try the other parser's distinct, usable title. When automatic titles run out, ask for a
+`Search title:` and repeat manual searches until there are results or the user cancels. Manual
+queries retain the same anime/live-action filter. Never choose an entry automatically: the first
+nonempty result list goes to numbered entry selection.
+
+An empty search is recoverable, so the query loop continues after reporting it. The loop exits
+normally only when entries are nonempty. API/network errors instead exit nonzero immediately;
+Typer handles Ctrl-C and EOF. This routing applies to titles only: episode parsing still uses
+Anitopy with a GuessIt fallback, and named releases still use GuessIt's group/service fields.
 
 **`search` takes no `--release`; it produces one.** It does take the options that describe what to
-do with files once filtered — `--all`, `--rename`, `--overwrite`, `--align`, `--strip-ih` — and
-passes them through unchanged. The line is filtering versus handling: which files to choose is what
-the wizard is for, what to do with the chosen files is stated up front.
+do with files once filtered — `--prefer-format`, `--all`, `--rename`, `--overwrite`, `--align`,
+`--strip-ih` — including their negative boolean forms. Effective values, including false overrides
+of config defaults, are recorded in the command. Selecting a file chooses its release, not an
+exact file or extension; `--prefer-format` controls ranking within that release.
 
 | Flag | Behavior |
 |---|---|
 | `--anime` / `--no-anime` | Restrict results to anime entries. On by default, because jimaku searches anime and live action separately. |
+| `--download` / `-d` | Print the command, then run the existing downloader with the selected entry, releases, and handling options. |
+| `--no-download` | Print the command without downloading. This is the default. |
 
 **The emitted command is the payload, and it is the whole of stdout.** One formatted `jimaku
 download` invocation: the entry, the constructed release list, the pass-through options, absolute
-paths, correct shell quoting. Prompts, entry lists, and progress are not payload and must not
-contaminate it, so both `jimaku search . >> crontab.fragment` and `jimaku search . | sh` work.
+paths, correct POSIX shell quoting. Prompts, input echoes, entry lists, progress, and download
+output belong on stderr. Preserve literal argument data in the payload with `sys.stdout.write`;
+Typer's echo can strip ANSI bytes on redirected stdout.
 
-Whether `search` also performs the download itself, or only emits the command, is undecided — see
-Current state.
+To save and run the command only after successful setup:
+
+```sh
+uv run jimaku search . --no-download > download-subtitles.sh && uv run sh download-subtitles.sh
+```
+
+An ordinary `search | sh` pipeline reports the consumer's status and can hide a setup failure.
+Do not replay or pipe a command emitted with `--download` unless a second download pass is intended.
+Failed or cancelled setup emits no command and starts no download. With `--download`, the command
+is emitted before downloading begins, and download failures propagate a nonzero exit.
+Missing subtitles are reported and skipped, but setup with no usable releases exits nonzero.
 
 ### `jimaku config`
 
@@ -89,9 +116,10 @@ An API key is required for everything except `config`; without one the tool expl
 it and exits nonzero. It comes from `JIMAKU_API_KEY` or from the config file, environment first.
 
 The config file is TOML in the platform's user config directory. It sets **defaults for command
-options** — a `[download]` table supplies defaults for `download`'s flags — and nothing else. It
-is deliberately not a database: it holds no directory-to-entry mappings and no per-series state.
-Flags always win over it.
+options** — a `[download]` table supplies defaults for `download`'s flags and the corresponding
+handling options in `search`. Search ignores configured release patterns and constructs its own
+list. The config is deliberately not a database: it holds no directory-to-entry mappings and no
+per-series state. Explicit flags always win over defaults.
 
 ## Behavioral rules
 
@@ -127,6 +155,11 @@ the wizard can't always name what the user just picked. When it can't, it synthe
 pattern from the filename instead. Either way the recorded pattern must be one the matcher will
 match against the file it came from — otherwise the wizard re-prompts on every episode and the
 emitted command downloads something other than what was chosen.
+
+The fallback escapes the stem and generalizes episode digits only when there is one unambiguous
+candidate and Anitopy's token agrees with GuessIt's advanced episode span. Season, codec,
+resolution, and version suffixes stay literal. Uncertain stems remain exact; do not broaden them
+just because the same number appears elsewhere in the filename.
 
 **Not every file under an entry is a subtitle.** Entries also carry ZIP archives and stray
 uploads. Candidates are restricted by extension.
@@ -303,7 +336,8 @@ individual lines, preserving order and zero counts once anything visible happene
 Counts describe operations: a saved subtitle with failed stripping and alignment counts
 as one download and two failures. Processing details never add outcome counts.
 Any failed operation exits nonzero; skipped/missing files alone exit zero.
-`error:` reports a fatal command error; `[failed]` reports a per-file failure.
+For download, `error:` reports a fatal command error and `[failed]` a per-file failure. Search also
+uses `log_error` for recoverable parse/search misses; printing that diagnostic alone does not exit.
 
 `strip_ih` distinguishes changed, unchanged, unsupported, and drawing-containing SRTs
 left intact. Default and verbose output separate modified and removed cue counts.
@@ -327,17 +361,9 @@ loads lazily under a small guard against its `basicConfig` side effect.
 
 ## Current state
 
-`files` and the current `search` are debugging placeholders — thin dumps of API responses, not part
-of the intended command surface. Replacing `search` with the wizard described above is the next
-piece of work; `files` goes away once the wizard can show what releases an entry has.
-
-**Open: does `search` run the download, or only emit the command?** Emit-only makes the stdout
-contract trivially honest and `jimaku search . | sh` the documented first run, at the cost of a
-second pass over the API and a `| sh` the user has to know to type. Note that `| sh` reports
-`search`'s exit code, not the download's. Running it directly is friendlier interactively, but the
-emitted command becomes a claim about what just happened rather than the thing that did it, and the
-two can drift. The accumulation design removes what would otherwise be the deciding constraint: the
-release list fully determines the outcome, so a second pass reproduces the session exactly.
+`search` implements the wizard above, including genre-first title retries, manual search input,
+release selection, and opt-in download execution. `files` remains a debugging placeholder that
+dumps API responses, rather than part of the intended command surface.
 
 `--align` runs ffsubsync over the subtitle that just downloaded, replacing it in place. The CLI
 uses the native progress bar in terminals and suppresses it for cron/diagnostic output by
@@ -353,6 +379,27 @@ non-dialogue filter. Each step has its own error handling, so a failure in one s
 other's work in place. There is no
 `--dry-run`, no episode-number offset for absolute-vs-per-season numbering, no format conversion,
 and no structured output. `config` reads but does not write.
+
+## Development
+
+Use `uv run` for development and verification rather than separate package builds; do not create
+`dist/` for routine checks:
+
+```sh
+uv run pytest -q
+uv run ruff check .
+uv run basedpyright
+```
+
+Basedpyright checks types, not formatting. Report errors and warnings separately and compare
+diagnostics against the baseline rather than changing unrelated code to silence them.
+
+Use `src/jimaku_cli/download.py` as the style reference: commands before helpers, multiline
+`Annotated` options, and useful explicit types. Prefer public Typer prompts and a small query loop
+over UI or fallback frameworks. Send custom diagnostics through `log_error`, ordinary status/choices to stderr, and
+keep prompt input echoes off stdout. Prioritize simple, readable code over exhaustive filename
+edge-case handling. Test retries, cancellation, and payload isolation with real CLI input;
+distinguish fixture-based API tests from live metadata checks.
 
 ## Non-goals
 

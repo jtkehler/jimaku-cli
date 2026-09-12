@@ -75,6 +75,150 @@ def test_search_accumulates_releases_in_episode_order(tmp_path):
     assert not list(tmp_path.glob("*.srt"))
 
 
+@pytest.mark.parametrize("anime, query", [
+    (True, "Wedding Impossible 2024"),
+    (False, "Wedding Impossible"),
+])
+def test_search_uses_genre_specific_primary_title(
+    tmp_path: Path, anime: bool, query: str
+) -> None:
+    (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
+    client = SearchClient({7: [subtitle("[Group] Wedding Impossible - 07.srt")]})
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path), "--anime" if anime else "--no-anime"],
+        obj=client, input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert client.searched == [(query, anime)]
+    assert "Search title:" not in result.stderr
+    assert result.stdout.startswith("jimaku download ")
+    assert result.stdout.count("\n") == 1
+
+
+@pytest.mark.parametrize("filename, anime, episode, queries", [
+    (
+        "[Animax fix] Initial D Fifth Stage - ACT.04 因縁のリベンジバトル.ja.mkv",
+        True, 4, ["Initial D Fifth Stage - ACT", "Initial D Fifth Stage"],
+    ),
+    (
+        "作りたい女と食べたい女（０６） - [1440-1920x1080@KFMVFR.hevc10_crf 20][字].mkv",
+        False, 6, ["作りたい女と食べたい女（０６）", "作りたい女と食べたい女"],
+    ),
+])
+def test_search_retries_other_parser_after_empty_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    filename: str, anime: bool, episode: int, queries: list[str],
+) -> None:
+    (tmp_path / filename).touch()
+    client = SearchClient({episode: [subtitle("[Group] Show - 01.srt")]})
+
+    def search_entries(query: str, *, anime: bool) -> list[Entry]:
+        client.searched.append((query, anime))
+        return client.entries if query == queries[-1] else []
+
+    monkeypatch.setattr(client, "search_entries", search_entries)
+    result = CliRunner().invoke(
+        app, [str(tmp_path), "--anime" if anime else "--no-anime"],
+        obj=client, input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert client.searched == [(query, anime) for query in queries]
+    assert "Search title:" not in result.stderr
+    assert result.stdout.startswith("jimaku download ")
+    assert result.stdout.count("\n") == 1
+
+
+@pytest.mark.parametrize("anime", [True, False])
+def test_search_prompts_for_a_title_after_both_parsers_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, anime: bool
+) -> None:
+    (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
+    client = SearchClient({7: [subtitle("[Group] Wedding Impossible - 07.srt")]})
+
+    def search_entries(query: str, *, anime: bool) -> list[Entry]:
+        client.searched.append((query, anime))
+        return client.entries if query == "Correct title" else []
+
+    monkeypatch.setattr(client, "search_entries", search_entries)
+    result = CliRunner().invoke(
+        app, [str(tmp_path), "--anime" if anime else "--no-anime"],
+        obj=client, input="   \nStill wrong\nCorrect title\n1\n1\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    queries = ["Wedding Impossible 2024", "Wedding Impossible"]
+    if not anime:
+        queries.reverse()
+    assert client.searched == [
+        (query, anime) for query in [*queries, "Still wrong", "Correct title"]
+    ]
+    assert "Search title:" in result.stderr
+    assert "Still wrong" in result.stderr
+    assert "Correct title" in result.stderr
+    assert result.stdout.startswith("jimaku download ")
+    assert result.stdout.count("\n") == 1
+    assert "Correct title" not in result.stdout
+    assert releases(shlex.split(result.stdout)) == ["Group"]
+
+
+@pytest.mark.parametrize("fail_at", [0, 1, 2])
+@pytest.mark.parametrize("error", [
+    JimakuError(429, "retry later"), requests.Timeout("search timed out"),
+])
+def test_search_api_errors_stop_instead_of_trying_another_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    fail_at: int, error: Exception,
+) -> None:
+    (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
+    client = SearchClient({})
+    queries = ["Wedding Impossible 2024", "Wedding Impossible", "Manual title"]
+
+    def search_entries(query: str, *, anime: bool) -> list[Entry]:
+        client.searched.append((query, anime))
+        if len(client.searched) == fail_at + 1:
+            raise error
+        return []
+
+    monkeypatch.setattr(client, "search_entries", search_entries)
+    result = CliRunner().invoke(
+        app, [str(tmp_path), "--download"], obj=client, input="Manual title\n",
+    )
+
+    assert result.exit_code == 1
+    assert str(error) in result.stderr
+    assert ("Search title:" in result.stderr) is (fail_at == 2)
+    assert client.searched == [(query, True) for query in queries[:fail_at + 1]]
+    assert client.listed == []
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("run_download", [False, True])
+def test_cancelling_manual_title_search_emits_nothing(
+    tmp_path: Path, run_download: bool,
+) -> None:
+    (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
+    client = SearchClient({})
+    client.entries = []
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path), "--download" if run_download else "--no-download"],
+        obj=client, input="Manual title\n",
+    )
+
+    assert result.exit_code == 1
+    assert "Search title:" in result.stderr
+    assert client.searched == [
+        ("Wedding Impossible 2024", True), ("Wedding Impossible", True),
+        ("Manual title", True),
+    ]
+    assert client.listed == []
+    assert result.stdout == ""
+
+
 def test_search_uses_guessit_when_anitopy_has_no_title(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -108,6 +252,29 @@ def test_search_rejects_unusable_titles_before_api_calls(
     assert result.stdout == ""
     assert "error: could not determine a title from S01E01.mkv" in result.stderr
     assert client.searched == client.listed == []
+
+
+@pytest.mark.parametrize("title", [None, "", "   ", ["Show"]])
+def test_search_recovers_with_manual_title_when_parsing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, title: object
+) -> None:
+    (tmp_path / "S01E01.mkv").touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    monkeypatch.setattr(
+        "jimaku_cli.search.anitopy.parse", lambda name: {"anime_title": title}
+    )
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path)], obj=client, input="Show\n1\n1\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert client.searched == [("Show", True)]
+    assert client.listed == [(42, 1)]
+    assert "Search title:" in result.stderr
+    assert result.stdout.startswith("jimaku download ")
+    assert result.stdout.count("\n") == 1
 
 
 @pytest.mark.parametrize("anime", [True, False])
