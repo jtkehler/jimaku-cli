@@ -1,7 +1,7 @@
 import logging
 import re
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import anitopy
 import guessit
@@ -47,6 +47,16 @@ def download(
             ),
         ),
     ] = download_config.get("release", []),  # noqa: B008
+    prefer_format: Annotated[
+        Literal["srt", "ass", "ssa", "vtt", "sub"],
+        typer.Option(
+            case_sensitive=False,
+            help=(
+                "Prefer this subtitle format within each release. Other formats "
+                "remain eligible as fallbacks; --all still downloads every match."
+            ),
+        ),
+    ] = download_config.get("prefer_format", "srt"),
     rename: Annotated[
         bool,
         typer.Option(
@@ -135,7 +145,7 @@ def download(
             logger.debug("Listing failed for %s", video.name, exc_info=True)
             continue
 
-        filtered = filter_release(remote_files, release)
+        filtered = filter_release(remote_files, release, prefer_format)
         to_download = filtered if download_all else filtered[:1]
 
         if not to_download:
@@ -275,21 +285,26 @@ def match(pattern: str, filename: str) -> bool:
 
 
 def filter_release(
-    file_candidates: list[FileEntry], release_patterns: list[str]
+    file_candidates: list[FileEntry],
+    release_patterns: list[str],
+    prefer_format: str = "srt",
 ) -> list[FileEntry]:
-    """Filter to subtitle files, ordering matches by release-pattern priority."""
+    """Filter subtitles by release group, then sort by preferred format, recency, then name."""
     valid_subtitles = [
         file
         for file in file_candidates
         if Path(file.name).suffix.lower() in SUBTITLE_EXTS
     ]
+    valid_subtitles.sort(key=lambda file: file.name)
+    valid_subtitles.sort(key=lambda file: file.last_modified, reverse=True)
+    valid_subtitles.sort(
+        key=lambda file: Path(file.name).suffix.lower() != f".{prefer_format.lower()}"
+    )
     if not release_patterns:
         return valid_subtitles
     filtered: list[FileEntry] = []
     for pattern in release_patterns:
         matched = [file for file in valid_subtitles if match(pattern, file.name)]
-        matched.sort(key=lambda file: file.name)
-        matched.sort(key=lambda file: file.last_modified, reverse=True)
         filtered.extend(matched)
     return filtered
 

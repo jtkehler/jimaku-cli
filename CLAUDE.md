@@ -25,6 +25,7 @@ left alone. Non-interactive and safe to re-run.
 |---|---|
 | `--id N` | jimaku entry ID (required) |
 | `--release PATTERN` | Repeatable; order is significant. Matched against the release group or streaming service in the remote filename, case-insensitively. Prefix with `re:` for a regex. Omit to accept anything. |
+| `--prefer-format FORMAT` | Prefer `srt` by default within each release priority. Accepts `srt`, `ass`, `ssa`, `vtt`, and `sub`, case-insensitively. Other supported formats remain eligible; no conversion. Config: `[download] prefer_format = "srt"`. |
 | `--all` / `--no-all` | Download every matching release, each to its own file. Off by default: only the best match is written. `--no-all` overrides a true config default. |
 | `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename apart from lowercasing its extension. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
@@ -109,8 +110,11 @@ outright for entries flagged as movies.
 
 **Release matching is a priority list, not a filter.** Patterns are tried in the order given and
 the first that matches wins; with `--all`, every match is kept, ordered by pattern priority and
-then by recency. `--release` is repeatable rather than comma-separated, because regexes contain
-commas.
+then by preferred format, recency (newest first), and filename. `--release` is repeatable rather
+than comma-separated, because regexes contain commas. `--prefer-format` is a single soft
+preference, applied per episode; it never excludes a supported subtitle or outranks an explicit
+release priority. With no release patterns, format, recency, and filename rank all supported
+subtitles. `--all` keeps nonpreferred formats too.
 
 **`search` and `download` must decide identically.** The wizard's fast-forward asks the same
 question `download` asks — does any file for this episode match the patterns so far — and the two

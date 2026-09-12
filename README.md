@@ -11,6 +11,30 @@ existing local files are not renamed.
 `--all` downloads every matching candidate; `--no-all` selects only the best match,
 including when `[download] all = true` is set in the config file.
 
+`--prefer-format FORMAT` prefers `srt` by default, without excluding other
+supported formats (`ass`, `ssa`, `vtt`, `sub`). Values are case-insensitive.
+The preference is applied independently for each episode; if the preferred format
+is unavailable, another supported format is selected. This selects files; it does
+not convert them.
+
+Candidates are ranked by `--release` priority first, then preferred format, newest
+modification time, and filename. With no release patterns, the same ranking applies
+across all supported subtitles. `--all` retains every matching candidate regardless
+of format.
+
+```sh
+jimaku download . --id 123                      # prefer SRT, with fallbacks
+jimaku download . --id 123 --prefer-format ass  # prefer ASS instead
+```
+
+Set the default in the config file reported by `jimaku config`; an explicit flag
+overrides it:
+
+```toml
+[download]
+prefer_format = "srt"
+```
+
 See [known issues](docs/known-issues.md) for deferred review findings and fix research.
 
 ## Output and verbosity
