@@ -323,8 +323,9 @@ def test_an_api_failure_in_files_is_reported_on_stderr():
     assert "upstream exploded" in result.stderr
 
 
-def test_an_api_failure_in_search_is_reported_on_stderr():
-    result = runner.invoke(search_app, ["frieren"], obj=_ExplodingClient())
+def test_an_api_failure_in_search_is_reported_on_stderr(tmp_path):
+    (tmp_path / "Frieren - 01.mkv").touch()
+    result = runner.invoke(search_app, [str(tmp_path)], obj=_ExplodingClient())
 
     assert result.exit_code != 0
     assert "upstream exploded" in result.stderr
@@ -336,7 +337,7 @@ class _ExplodingClient:
     def get_files(self, entry_id: int, episode: int | None = None):
         raise JimakuError(500, "upstream exploded")
 
-    def search_entries(self, query: str):
+    def search_entries(self, query: str, *, anime: bool = True):
         raise JimakuError(500, "upstream exploded")
 
 
