@@ -1,7 +1,10 @@
 """The setup wizard emits a reproducible command, not subtitle downloads."""
 
+import os
 import re
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,7 +15,35 @@ from typer.testing import CliRunner
 from jimaku_cli import cli
 from jimaku_cli.api import Entry, EntryFlags, FileEntry, JimakuError
 from jimaku_cli.download import match
-from jimaku_cli.search import app, release_pattern
+from jimaku_cli.search import app, choose, release_pattern
+
+
+@pytest.fixture(autouse=True)
+def fzf_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub only the terminal UI: test input is one-based indices per prompt.
+
+    Space-separated indices represent items marked in that order. Manual title
+    prompts still use real Typer input. Real fzf is exercised by the PTY tests.
+    """
+    def select(
+        args: list[str], *, input: bytes, **_options: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        rows = input.decode("utf-8").splitlines()
+        for number, row in enumerate(rows, 1):
+            label = row.split("\t", 1)[1]
+            typer.echo(f"{number}. {label}", err=True)
+        prompt = next(arg.removeprefix("--prompt=") for arg in args if arg.startswith("--prompt="))
+        typer.echo(prompt, err=True)
+        answer = sys.stdin.readline()
+        if not answer:
+            raise KeyboardInterrupt
+        indices = [int(value) - 1 for value in answer.split()]
+        if "--multi" not in args:
+            assert len(indices) == 1, "entry selection must be single-choice"
+        selected = "".join(rows[index] + "\n" for index in indices).encode("utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout=selected)
+
+    monkeypatch.setattr("jimaku_cli.search.subprocess.run", select)
 
 
 class SearchClient:
@@ -47,6 +78,104 @@ def subtitle(name: str) -> FileEntry:
 
 def releases(command: list[str]) -> list[str]:
     return [command[i + 1] for i, arg in enumerate(command) if arg == "--release"]
+
+
+def test_search_selects_an_entry_with_fzf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    # Escaped names need no reverse lookup to identify the selected entry.
+    client.entries = [
+        Entry(42, "Show\n", "2026-01-01T00:00:00Z"),
+        Entry(99, r"Show\n", "2026-01-01T00:00:00Z"),
+    ]
+    calls: list[tuple[list[str], list[str]]] = []
+
+    def select(
+        args: list[str], *, input: bytes, **options: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert options["stdout"] == subprocess.PIPE
+        assert options["stderr"] is None  # fzf needs the inherited terminal, not a pipe.
+        assert options["check"] is False
+        assert "capture_output" not in options
+        rows = input.decode("utf-8").splitlines()
+        calls.append((rows, args))
+        row = rows[1] if len(calls) == 1 else rows[0]
+        return subprocess.CompletedProcess(args, 0, stdout=(row + "\n").encode("utf-8"))
+
+    monkeypatch.setattr("jimaku_cli.search.subprocess.run", select)
+    result = CliRunner().invoke(app, [str(tmp_path)], obj=client, input="")
+
+    assert result.exit_code == 0, result.stderr
+    assert client.listed == [(99, 1)]
+    assert len(calls) == 2
+    assert "--no-multi" in calls[0][1]
+    assert "--multi" in calls[1][1]
+    assert "--sort" in calls[0][1]
+    assert r"Show\n" in calls[0][0][1]
+    assert "\n" not in calls[0][0][1]
+    assert result.stdout.startswith("jimaku download ")
+    assert result.stdout.count("\n") == 1
+
+
+def test_search_selects_multiple_releases_in_mark_order(tmp_path: Path) -> None:
+    for episode in (1, 2, 3):
+        (tmp_path / f"Show - {episode:02}.mkv").touch()
+    client = SearchClient({
+        1: [subtitle("[Alpha] Show - 01.srt"), subtitle("[Beta] Show - 01.srt")],
+        2: [subtitle("[Beta] Show - 02.ass")],
+        3: [subtitle("[Gamma] Show - 03.srt")],
+    })
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path)], obj=client, input="1\n2 1\n1\n"
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert releases(shlex.split(result.stdout)) == ["Beta", "Alpha", "Gamma"]
+    # Any selected release still covers an episode; no per-release completeness check.
+    assert result.stderr.count("Subtitle release:") == 2
+    assert client.listed == [(42, 1), (42, 2), (42, 3)]
+    assert result.stdout.count("\n") == 1
+
+
+@pytest.mark.parametrize("download_all", [False, True])
+def test_multi_selection_deduplicates_releases_and_replays_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, download_all: bool
+) -> None:
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient({1: [
+        subtitle("[Alpha] Show - 01.srt"),
+        subtitle("[Beta] Show - 01.srt"),
+        subtitle("[Alpha] Show - 01.ass"),
+    ]})
+    def make_client(**_kwargs: object) -> SearchClient:
+        return client
+
+    def save_subtitle(_url: str, destination: Path) -> None:
+        _ = destination.write_bytes(b"fixture")
+
+    monkeypatch.setattr(cli, "api_key", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", make_client)
+    runner = CliRunner()
+    search = runner.invoke(
+        cli.app,
+        ["search", str(tmp_path), "--all" if download_all else "--no-all",
+         "--no-rename", "--no-overwrite", "--no-align", "--no-strip-ih"],
+        input="1\n2 3 1\n",
+    )
+
+    assert search.exit_code == 0, search.stderr
+    assert releases(shlex.split(search.stdout)) == ["Beta", "Alpha"]
+    monkeypatch.setattr(client, "download_file", save_subtitle)
+    downloaded = runner.invoke(cli.app, shlex.split(search.stdout)[1:], catch_exceptions=False)
+
+    assert downloaded.exit_code == 0, downloaded.stderr
+    assert downloaded.stdout == ""
+    assert (tmp_path / "[Beta] Show - 01.srt").read_bytes() == b"fixture"
+    assert (tmp_path / "[Alpha] Show - 01.srt").exists() is download_all
+    assert (tmp_path / "[Alpha] Show - 01.ass").exists() is download_all
 
 
 def test_search_accumulates_releases_in_episode_order(tmp_path):
@@ -553,19 +682,86 @@ def test_cancelled_search_leaves_stdout_empty(
     assert "Aborted" in result.stderr
 
 
-def test_invalid_choices_are_reprompted_on_stderr(tmp_path):
+@pytest.mark.parametrize("value", [None, "", "--filter=Show --print-query --multi"])
+@pytest.mark.parametrize("outcome", ["success", "cancel", "launch-error"])
+def test_selection_isolated_from_shell_fzf_defaults(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, outcome: str
+) -> None:
+    defaults = ("FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE")
+    for name in defaults:
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    original = dict(os.environ)
+
+    def select(
+        args: list[str], *, input: bytes, env: dict[str, str], **_options: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        # Only the child environment is filtered; even during selection the parent
+        # retains absent, empty, and nonempty values without a restoration window.
+        filtered_correctly = env == {
+            name: value for name, value in original.items() if name not in defaults
+        }
+        parent_unchanged = dict(os.environ) == original
+        # Keep pytest failure introspection from displaying unrelated credentials.
+        assert filtered_correctly
+        assert parent_unchanged
+        if outcome == "cancel":
+            raise KeyboardInterrupt
+        if outcome == "launch-error":
+            raise OSError("fzf launch failed")
+        return subprocess.CompletedProcess(args, 0, stdout=input)
+
+    monkeypatch.setattr("jimaku_cli.search.subprocess.run", select)
+    if outcome == "cancel":
+        with pytest.raises(typer.Abort):
+            _ = choose("Entry", ["Show"])
+    elif outcome == "launch-error":
+        with pytest.raises(typer.Exit) as error:
+            _ = choose("Entry", ["Show"])
+        assert error.value.exit_code == 1
+    else:
+        assert choose("Entry", ["Show"]) == [0]
+    parent_unchanged = dict(os.environ) == original
+    assert parent_unchanged
+
+
+def test_fzf_launch_failure_is_reported_without_a_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     (tmp_path / "Show - 01.mkv").touch()
     client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
 
-    result = CliRunner().invoke(
-        app, [str(tmp_path)], obj=client, input="oops\n0\n9\n1\n-1\n8\n1\n"
-    )
+    def unavailable(*_args: object, **_kwargs: object) -> str:
+        raise FileNotFoundError("fzf executable missing")
 
-    assert result.exit_code == 0, result.stderr
-    assert result.stdout.startswith("jimaku download ")
-    assert result.stdout.count("\n") == 1
-    assert "error: Choose a number from 1 to 1" in result.stderr
-    assert "oops" in result.stderr
+    monkeypatch.setattr("jimaku_cli.search.subprocess.run", unavailable)
+    result = CliRunner().invoke(app, [str(tmp_path), "--download"], obj=client)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "error: could not run fzf: fzf executable missing" in result.stderr
+    assert client.listed == []
+
+
+@pytest.mark.parametrize("returncode, stdout", [(0, b""), (1, b""), (2, b"0\tShow\n"), (130, b"")])
+def test_unsuccessful_fzf_selection_aborts_without_a_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: bytes
+) -> None:
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    def no_match(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout)
+
+    monkeypatch.setattr("jimaku_cli.search.subprocess.run", no_match)
+
+    result = CliRunner().invoke(app, [str(tmp_path)], obj=client)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert client.listed == []
+    assert "Aborted" in result.stderr
 
 
 @pytest.mark.parametrize("flags", [["--release", "Group"], ["--prefer-format", "zip"]])

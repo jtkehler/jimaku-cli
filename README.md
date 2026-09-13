@@ -14,9 +14,21 @@ uv run jimaku search "/path/to/series" --no-anime  # live-action entries
 ```
 
 `search [DIRECTORY]` defaults to the current directory. It searches using the first
-video's parsed title, then uses numbered Typer prompts to choose an entry and a
-subtitle release. Videos are visited in numeric episode order, with numberless
-videos last (sorted by filename); movies use an unfiltered file listing.
+video's parsed title, then uses **fzf** to choose one entry and one or more subtitle
+releases. Type to fuzzy-filter the list, use arrow keys to move, and press Enter to
+accept. In release selection, Tab/Shift-Tab toggle marks; mark releases in priority
+order. Enter without marks picks the highlighted item. Esc or Ctrl-C cancels setup.
+Videos are visited in numeric episode order, with numberless videos last (sorted
+by filename); movies use an unfiltered file listing.
+
+Search needs an interactive terminal; stdout can still be redirected to save the
+command. Supported `iterfzf` wheels bundle fzf, so no separate fzf installation is
+normally needed. The wizard runs that bundled executable directly and drains its
+result pipe while it runs, avoiding the iterfzf callable's large-selection deadlock.
+It excludes `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` only from the child
+environment, so shell customizations cannot auto-select entries or change the
+returned values; the parent environment stays unchanged. Use `jimaku download`,
+not `search`, in unattended scripts or cron.
 
 Title parsing starts with Anitopy for anime and GuessIt for `--no-anime`. If that
 search returns no entries, it tries the other parser's title once, skipping empty
@@ -27,9 +39,14 @@ Ctrl-C or EOF. API/network errors stop the command rather than trying more title
 The first nonempty result list goes to entry selection; entries are never chosen
 automatically. Episode parsing and release matching are unchanged.
 
-Once a release covers an episode, no further choice is needed for that episode.
-The next gap prompts for a fallback release, building the same priority list that
-`download` uses. Archives and other non-subtitle files are excluded. If a release
+Once any selected release covers an episode, no further choice is needed for that
+episode. The next gap prompts for additional fallback releases, building the same
+priority list that `download` uses. Mark order determines priority within each
+prompt; duplicate release patterns are kept only once, at their first position.
+Multi-selection does not imply `--all`: by default the downloader still picks the
+best match per episode. Use `--all` to download every matching subtitle. Neither
+mode requires every selected release to be available for every episode.
+Archives and other non-subtitle files are excluded. If a release
 cannot be parsed, an escaped filename regex is generated with only an unambiguous
 episode token generalized. Versioned names such as `01v2` are supported when the
 parsers confirm the episode span; `v2` and release details stay literal. Ambiguous

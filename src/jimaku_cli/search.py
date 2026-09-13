@@ -1,7 +1,9 @@
 """Interactive setup; stdout contains only the resulting download command."""
 
+import os
 import re
 import shlex
+import subprocess
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -10,6 +12,7 @@ from typing import Annotated, Literal
 import anitopy
 import guessit
 import typer
+from iterfzf import BUNDLED_EXECUTABLE
 
 from .api import JimakuClient
 from .download import (
@@ -142,9 +145,8 @@ def search(
         if anime:
             message += ". Use --no-anime to search live action."
         log_error(message)
-    entry = entries[
-        choose("Entry", [f"{entry.name} (ID {entry.id})" for entry in entries])
-    ]
+    [entry_index] = choose("Entry", [f"{entry.name} (ID {entry.id})" for entry in entries])
+    entry = entries[entry_index]
 
     releases: list[str] = []
     failed = False
@@ -166,10 +168,13 @@ def search(
             log_error(f"{video.name}: no subtitles available")
             continue
         typer.echo(f"Subtitles for {inline(video.name)}:", err=True)
-        selected = candidates[
-            choose("Subtitle release", [file.name for file in candidates])
-        ]
-        releases.append(release_pattern(selected.name))
+        selected = choose(
+            "Subtitle release", [file.name for file in candidates], multi=True
+        )
+        for index in selected:
+            pattern = release_pattern(candidates[index].name)
+            if pattern not in releases:
+                releases.append(pattern)
 
     if failed:
         raise typer.Exit(1)
@@ -239,14 +244,33 @@ def release_pattern(filename: str) -> str:
     return "re:^" + pattern + r"\.[^.]+$"
 
 
-def choose(message: str, labels: list[str]) -> int:
-    """Use Typer's numbered prompt, keeping even input echoes off stdout."""
-    for number, label in enumerate(labels, 1):
-        typer.echo(f"{number}. {inline(label)}", err=True)
-    # Click uses input() for the answer; its space and echo also belong on stderr.
-    with redirect_stdout(sys.stderr):
-        while True:
-            number = typer.prompt(message, type=int, err=True)
-            if 1 <= number <= len(labels):
-                return number - 1
-            log_error(f"Choose a number from 1 to {len(labels)}.")
+def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]:
+    """Choose by hidden index; fzf's UI uses stderr, not the command payload."""
+    env = {
+        name: value for name, value in os.environ.items()
+        if name not in {"FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE"}
+    }
+    header = (
+        "Tab/Shift-Tab: mark in priority order; Enter: accept; Esc: cancel"
+        if multi else "Type to search; Enter to select; Esc to cancel"
+    )
+    try:
+        # iterfzf's callable waits before reading stdout and can fill the result pipe.
+        # run() uses communicate() to drain it while fzf is still running.
+        process = subprocess.run(
+            [str(BUNDLED_EXECUTABLE or "fzf"), "--multi" if multi else "--no-multi",
+             "--sort", f"--prompt={message}: ", f"--header={header}",
+             "--delimiter=\t", "--with-nth=2..", "--height=40%", "--layout=reverse"],
+            input="".join(
+                f"{index}\t{inline(label)}\n" for index, label in enumerate(labels)
+            ).encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=None, env=env, check=False,
+        )
+    except KeyboardInterrupt as exc:
+        raise typer.Abort() from exc
+    except OSError as exc:
+        log_error(f"could not run fzf: {exc}")
+        raise typer.Exit(1) from exc
+    if process.returncode != 0 or not process.stdout:
+        raise typer.Abort()
+    return [int(row.split(b"\t", 1)[0]) for row in process.stdout.splitlines()]

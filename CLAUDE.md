@@ -50,26 +50,46 @@ A session:
 1. Sort the directory's videos by episode number, with numberless videos last and filenames
    breaking ties.
 2. Search entries using the first video's parsed title; prompt to choose an entry.
-3. List that episode's files; prompt to choose one.
-4. Record the chosen file's release as the first pattern, falling back to a regex synthesized from
-   the filename when the release can't be parsed.
+3. List that episode's files; use fzf to choose one or more, marking in priority order.
+4. Record the chosen files' releases in mark order, deduplicating patterns without reordering and
+   falling back to a regex synthesized from the filename when the release can't be parsed.
 5. Advance through the remaining episodes, testing each against the patterns so far. At the first
-   episode where nothing matches, prompt again and append the chosen release as the next priority.
+   episode where nothing matches, prompt again and append the chosen releases as the next priorities.
    Continue to the end of the directory.
 6. Emit the `jimaku download` command: the entry ID, the accumulated release list in priority
    order, and the effective handling options. With `--download`, then call the existing downloader
    directly with those values; do not execute the emitted shell string.
 
 Release prompts correspond to the distinct releases the season actually needs, not the number of
-episodes. Priority order is discovery order — the release that covers episode 1 comes first,
-whatever fills the first gap comes second.
+episodes. Priority order is discovery order across prompts and mark order within each prompt.
+Selecting multiple releases does not enable `--all` or require every release for every episode;
+the existing any-match fast-forward and download ranking remain unchanged.
+
+Entry selection is single-choice fzf; subtitle selection enables multi-choice. Type to fuzzy-filter,
+use Tab/Shift-Tab to mark releases, Enter to accept marks (or the highlighted item if none are marked),
+and Esc/Ctrl-C to cancel. Use hidden numeric indices to map escaped labels back to original objects,
+not label equality or filename parsing. The shared `choose()` helper returns those indices in mark
+order. Search needs an interactive terminal, but stdout can be redirected to save the command;
+`download` remains the unattended interface.
+
+`iterfzf` supplies its bundled fzf executable. Invoke it with `subprocess.run`, UTF-8 input,
+captured stdout, and inherited stderr so the UI stays out of the command payload. The iterfzf
+1.9.0.67.0 callable waits for fzf to exit before reading its result pipe: sufficiently large
+multi-selections deadlock when that pipe fills. `run()` drains the result while fzf runs instead;
+do not replace it with a wait-before-read wrapper. Supported wheels bundle fzf, with a system
+`fzf` fallback when the package has no bundled executable.
+
+Exclude `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` from the child's environment so shell
+defaults cannot auto-accept entries or change the result protocol. Leave the parent environment
+unchanged. Cancellation, an empty selection, or a nonzero fzf exit aborts setup; executable launch
+errors go through `log_error`. No failed selection emits a command or starts a download.
 
 **Title search is genre-first, then one alternate, then user input.** Use Anitopy's title first
 for anime and GuessIt's first for `--no-anime`. If that title is unusable or the search returns no
 entries, try the other parser's distinct, usable title. When automatic titles run out, ask for a
 `Search title:` and repeat manual searches until there are results or the user cancels. Manual
 queries retain the same anime/live-action filter. Never choose an entry automatically: the first
-nonempty result list goes to numbered entry selection.
+nonempty result list goes to single-choice fzf entry selection.
 
 An empty search is recoverable, so the query loop continues after reporting it. The loop exits
 normally only when entries are nonempty. API/network errors instead exit nonzero immediately;
@@ -395,11 +415,20 @@ Basedpyright checks types, not formatting. Report errors and warnings separately
 diagnostics against the baseline rather than changing unrelated code to silence them.
 
 Use `src/jimaku_cli/download.py` as the style reference: commands before helpers, multiline
-`Annotated` options, and useful explicit types. Prefer public Typer prompts and a small query loop
-over UI or fallback frameworks. Send custom diagnostics through `log_error`, ordinary status/choices to stderr, and
+`Annotated` options, and useful explicit types. Keep public Typer prompts for free-text input and a
+small query loop; use the shared fzf helper for entry/release selection rather than a UI framework.
+Send custom diagnostics through `log_error`, ordinary status/choices to stderr, and
 keep prompt input echoes off stdout. Prioritize simple, readable code over exhaustive filename
-edge-case handling. Test retries, cancellation, and payload isolation with real CLI input;
-distinguish fixture-based API tests from live metadata checks.
+edge-case handling. Test manual retries with real CLI input and fzf with a real PTY, including
+Japanese filtering, multi-selection order, escaped-label collisions, large selections exceeding pipe
+capacity, cancellation, and redirected-stdout payload isolation. Keep PTY waits bounded and clean up
+child processes on failure. Distinguish fixture-based API tests from live metadata checks.
+
+Manage dependencies with `uv add`/`uv remove`, keep `uv.lock` synchronized, and check it with
+`uv lock --check`. Retain `iterfzf` for its executable and `ffsubsync` for lazy-loaded alignment,
+even though their use is not an ordinary top-level callable import. Fuzzy selection comes from fzf;
+configuration is read-only and uses standard-library `tomllib`, so neither a separate Python fuzzy
+matcher nor a TOML-writing library is needed.
 
 ## Non-goals
 

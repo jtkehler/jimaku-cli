@@ -28,8 +28,10 @@ def test_search_captures_download_defaults_but_builds_its_own_releases(tmp_path,
     )
     code = """
 import json
+import subprocess
 import sys
 from typer.testing import CliRunner
+from unittest.mock import patch
 from jimaku_cli.api import Entry, FileEntry
 from jimaku_cli.search import app
 
@@ -41,8 +43,13 @@ class Client:
                           '2026-01-01T00:00:00Z') for name in
                 ('[SrtGroup] Show - 01.srt', '[AssGroup] Show - 01.ass')]
 
-result = CliRunner().invoke(app, [sys.argv[1], *json.loads(sys.argv[2])],
-                            obj=Client(), input='1\\n1\\n')
+def select(args, *, input, **options):
+    row = input.splitlines()[0]
+    return subprocess.CompletedProcess(args, 0, stdout=row + b'\\n')
+
+with patch('jimaku_cli.search.subprocess.run', side_effect=select):
+    result = CliRunner().invoke(app, [sys.argv[1], *json.loads(sys.argv[2])],
+                                obj=Client())
 print(json.dumps({'exit': result.exit_code, 'stdout': result.stdout,
                   'stderr': result.stderr}))
 """
