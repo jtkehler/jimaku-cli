@@ -15,6 +15,7 @@ import typer
 from iterfzf import BUNDLED_EXECUTABLE
 
 from .api import JimakuClient
+from .colorscheme import FZF_COLORS
 from .download import (
     TRANSFER_ERRORS,
     VIDEO_EXTS,
@@ -250,6 +251,10 @@ def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]
         name: value for name, value in os.environ.items()
         if name not in {"FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE"}
     }
+    color = (
+        "--no-color" if env.get("NO_COLOR") or env.get("TERM") == "dumb"
+        else f"--color={FZF_COLORS}"
+    )
     header = (
         "Tab/Shift-Tab: mark in priority order; Enter: accept; Esc: cancel"
         if multi else "Type to search; Enter to select; Esc to cancel"
@@ -259,7 +264,7 @@ def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]
         # run() uses communicate() to drain it while fzf is still running.
         process = subprocess.run(
             [str(BUNDLED_EXECUTABLE or "fzf"), "--multi" if multi else "--no-multi",
-             "--sort", f"--prompt={message}: ", f"--header={header}",
+             "--sort", f"--prompt={message}: ", f"--header={header}", color,
              "--delimiter=\t", "--with-nth=2..", "--height=40%", "--layout=reverse"],
             input="".join(
                 f"{index}\t{inline(label)}\n" for index, label in enumerate(labels)

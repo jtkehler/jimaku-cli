@@ -289,6 +289,25 @@ def start_session(child: ChildCommand, mode: str) -> TerminalSession:
     return TerminalSession(child.command(mode), child.environment, child.videos.parent)
 
 
+@pytest.mark.parametrize(
+    "environment, colored",
+    [({}, True), ({"NO_COLOR": "1"}, False), ({"TERM": "dumb"}, False)],
+)
+def test_choose_uses_jimaku_accents(
+    child_command: ChildCommand, environment: dict[str, str], colored: bool,
+) -> None:
+    child_command.environment["COLORTERM"] = "truecolor"
+    child_command.environment.update(environment)
+    with start_session(child_command, "choose") as session:
+        session.wait_for("3/3")
+        session.query("フリーレン", 3)
+        _ = session.send(b"\r")
+        assert session.finish() == 0, session.diagnostic()
+        assert session.stdout == b"[1]\n", session.diagnostic()
+        assert (b"38;2;196;160;88" in session.terminal) == colored
+        assert (b"38;2;158;158;158" in session.terminal) == colored
+
+
 def test_choose_filters_japanese_and_returns_original_single_index(
     child_command: ChildCommand,
 ) -> None:

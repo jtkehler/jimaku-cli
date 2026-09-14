@@ -1,12 +1,14 @@
 import typer
 
 from .api import JimakuClient
+from .colorscheme import configure_typer
 from .config import api_key
 from .config import app as config_app
 from .download import app as download_app
 from .output import log_error
 from .search import app as search_app
 
+configure_typer()
 app = typer.Typer(no_args_is_help=True)
 
 # Commands that must work before an API key is configured.
