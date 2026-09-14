@@ -1,148 +1,113 @@
 # jimaku-cli
 
-Download Japanese subtitles from [jimaku.cc](https://jimaku.cc) alongside local videos.
+Download Japanese subtitles from [jimaku.cc](https://jimaku.cc) alongside local videos. Choose releases interactively, then reuse the generated download command for new episodes.
 
-## Search and setup
+## Installation
 
-Run from the repository with `uv run`; no wheel build or installation is needed:
-
-```sh
-uv run jimaku search "/path/to/series"
-uv run jimaku search "/path/to/series" --download  # or -d: also download after setup
-uv run jimaku search "/path/to/series" --rename --strip-ih --prefer-format ass
-uv run jimaku search "/path/to/series" --no-anime  # live-action entries
-```
-
-`search [DIRECTORY]` defaults to the current directory. It searches using the first
-video's parsed title, then uses **fzf** to choose one entry and one or more subtitle
-releases. Type to fuzzy-filter the list, use arrow keys to move, and press Enter to
-accept. In release selection, Tab/Shift-Tab toggle marks; mark releases in priority
-order. Enter without marks picks the highlighted item. Esc or Ctrl-C cancels setup.
-Videos are visited in numeric episode order, with numberless videos last (sorted
-by filename); movies use an unfiltered file listing.
-
-Search needs an interactive terminal; stdout can still be redirected to save the
-command. Supported `iterfzf` wheels bundle fzf, so no separate fzf installation is
-normally needed. The wizard runs that bundled executable directly and drains its
-result pipe while it runs, avoiding the iterfzf callable's large-selection deadlock.
-It excludes `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` only from the child
-environment, so shell customizations cannot auto-select entries or change the
-returned values; the parent environment stays unchanged. Use `jimaku download`,
-not `search`, in unattended scripts or cron.
-
-Title parsing starts with Anitopy for anime and GuessIt for `--no-anime`. If that
-search returns no entries, it tries the other parser's title once, skipping empty
-or identical titles. If neither finds an entry, or neither produces a usable title,
-`Search title:` lets you enter a query yourself. Manual searches keep the same
-anime/live-action filter and repeat until there are results or you cancel with
-Ctrl-C or EOF. API/network errors stop the command rather than trying more titles.
-The first nonempty result list goes to entry selection; entries are never chosen
-automatically. Episode parsing and release matching are unchanged.
-
-Once any selected release covers an episode, no further choice is needed for that
-episode. The next gap prompts for additional fallback releases, building the same
-priority list that `download` uses. Mark order determines priority within each
-prompt; duplicate release patterns are kept only once, at their first position.
-Multi-selection does not imply `--all`: by default the downloader still picks the
-best match per episode. Use `--all` to download every matching subtitle. Neither
-mode requires every selected release to be available for every episode.
-Archives and other non-subtitle files are excluded. If a release
-cannot be parsed, an escaped filename regex is generated with only an unambiguous
-episode token generalized. Versioned names such as `01v2` are supported when the
-parsers confirm the episode span; `v2` and release details stay literal. Ambiguous
-stems stay exact; other naming changes can still require another choice.
-
-By default, search only prints the command. `--no-download` explicitly selects
-this behavior. `--download` / `-d` also runs the existing downloader after setup,
-using the selected entry, release priorities, and handling options.
-
-In both modes, stdout contains only a shell-quoted `jimaku download` command with
-an absolute directory. Prompts, status, and download output go to stderr.
-To save the command and run it separately only if setup succeeds:
+Install with uv (recommended):
 
 ```sh
-uv run jimaku search "/path/to/series" --no-download --rename > download-subtitles.sh && uv run sh download-subtitles.sh
+uv tool install git+https://github.com/jtkehler/jimaku-cli
 ```
 
-`uv run sh` makes `jimaku` available to the generated script without installing it
-globally. Run tests with `uv run pytest -q`.
-Do not combine `--download` with piping or replaying the emitted command unless
-you intend to perform a second download pass.
+The interactive picker bundles fzf on supported platforms, with a system `fzf`
+fallback. [FFmpeg](https://ffmpeg.org/download.html) is required only for `--align`.
 
-`--prefer-format`, `--all`, `--rename`, `--overwrite`, `--align`, and `--strip-ih`
-use the `[download]` config defaults. Explicit flags, including their `--no-...`
-forms, win; effective values are recorded in the emitted command. Selecting a
-file chooses its **release**, while `--prefer-format` controls format ranking.
-Search constructs its own release list: it accepts no `--release` and ignores
-configured release patterns.
+## Setup
 
-Missing subtitles are reported and skipped. Cancellation, setup failures,
-or a search with no usable releases exit nonzero without emitting a command or
-starting a download. With `--download`, download failures also exit nonzero;
-the valid command has already been emitted before that download pass begins.
-An API key is required via `JIMAKU_API_KEY` or `api_key` in the config file.
-
-## Download behavior
-
-Downloaded subtitle extensions are always lowercase, with or without `--rename`.
-The normalized path is also used for skip-existing checks and post-processing;
-existing local files are not renamed.
-
-`--all` downloads every matching candidate; `--no-all` selects only the best match,
-including when `[download] all = true` is set in the config file.
-
-`--prefer-format FORMAT` prefers `srt` by default, without excluding other
-supported formats (`ass`, `ssa`, `vtt`, `sub`). Values are case-insensitive.
-The preference is applied independently for each episode; if the preferred format
-is unavailable, another supported format is selected. This selects files; it does
-not convert them.
-
-Candidates are ranked by `--release` priority first, then preferred format, newest
-modification time, and filename. With no release patterns, the same ranking applies
-across all supported subtitles. `--all` retains every matching candidate regardless
-of format.
-
-```sh
-jimaku download . --id 123                      # prefer SRT, with fallbacks
-jimaku download . --id 123 --prefer-format ass  # prefer ASS instead
-```
-
-Set the default in the config file reported by `jimaku config`; an explicit flag
-overrides it:
+Generate an API key on your [Jimaku account page](https://jimaku.cc/account).
+Run `jimaku config` to find the config path, then create the file and its parent
+directory:
 
 ```toml
+api_key = "your-api-key"
+
+# Optional defaults
 [download]
+rename = true
 prefer_format = "srt"
 ```
 
-See [known issues](docs/known-issues.md) for deferred review findings and fix research.
+Keep the file private. `JIMAKU_API_KEY` in the environment overrides the saved key.
+Command-line flags override config defaults, including negative flags such as
+`--no-rename`. Handling defaults also apply to `search`; release choices do not.
 
-## Output and verbosity
+## Usage
+
+Run these in a directory containing videos, or replace `.` with its path.
+Subdirectories are not scanned.
 
 ```sh
-jimaku download . --id 123       # every outcome
-jimaku download . --id 123 -q    # cron: downloads and errors
-jimaku download . --id 123 -v    # diagnostic logs
+jimaku search . --rename --download  # choose an entry and releases, then download
+jimaku search . --no-anime           # search live action instead of anime
+jimaku search .                      # print a reusable command without downloading
 ```
 
-| Option | Output |
-|---|---|
-| `-q` / `--quiet` | Downloads, errors, and basic results for requested `--strip-ih` and `--align` processing. |
-| Default | All outcomes: downloaded, skipped, missing, and failed. Includes modified/removed cue counts and available alignment offset/scale. |
-| `-v` / `--verbose` | Also show Jimaku HTTP diagnostics, ffsubsync logs, and tracebacks for caught failures. |
+Type to filter, use Tab/Shift-Tab to mark releases in priority order, and Enter to
+accept. Esc or Ctrl-C cancels. Search asks for fallback releases only when needed;
+choosing several does not enable `--all`.
 
-Both flags belong to `download`. Combining quiet and verbose flags is a usage error.
+For repeat downloads, use the generated command or supply a Jimaku entry ID and
+release names yourself (replace the example values):
 
-Use `-q` for cron mail: a run with only skipped or missing files stays silent,
-including no summary. Downloads and errors remain visible. Default runs show
-every outcome and its summary. All download output goes to **stderr**; stdout
-stays empty. With `--align`, default runs in an interactive terminal get a progress
-bar. Quiet, verbose, redirected output, and `TERM=dumb` get just
-`ffsubsync: aligning…` followed by completion or failure.
-`NO_COLOR` disables color.
+```sh
+jimaku download . --id 123 --release "GroupA" --release "GroupB" --rename
+```
 
-Summaries include the same outcome categories as individual lines. They count
-operations: one downloaded subtitle with failed stripping and
-alignment counts as one download and two failures. Processing details and progress
-do not add counts. Failures exit nonzero; skipped/missing files alone exit zero.
-Verbosity changes reporting, not the files selected or processed.
+Release patterns are ordered preferences. Plain names match the parsed release
+exactly, ignoring case; prefix with `re:` to match filenames with a regex.
+Existing output files are skipped unless `--overwrite` is set.
+
+Options shared by `search` and `download`:
+
+- `--rename`: name subtitles after the video, adding the release and `.ja` tag.
+- `--prefer-format`: prefer `srt` (default), `ass`, `ssa`, `vtt`, or `sub` within
+  each release. Other formats remain eligible; files are not converted.
+- `--all`: download every match instead of the best one per episode.
+- `--overwrite`: re-download existing targets.
+- `--strip-ih`: remove annotations and some ruby readings from SRT/ASS/SSA.
+- `--align`: synchronize timing to the video's audio with ffsubsync.
+
+Processing modifies downloaded subtitles in place. Stripping runs before alignment
+and **can remove real dialogue**; it is off by default. See
+[known issues](docs/known-issues.md) for filename-matching and output-collision
+limitations. Use `jimaku search --help` or `jimaku download --help` for all options.
+
+## Scripts and cron
+
+Search writes a POSIX-shell-quoted command to stdout and prompts to stderr.
+To save and run it only after successful setup:
+
+```sh
+jimaku search . --rename --no-download > download-subtitles.sh && sh download-subtitles.sh
+```
+
+Do not replay a command emitted with `--download` unless you want a second pass.
+Use `download`, not interactive `search`, for cron:
+
+```cron
+0 * * * * /absolute/path/to/jimaku download "/path/to/series" --id 123 --release "GroupA" --rename --quiet
+```
+
+Replace the example values; `command -v jimaku` gives the executable path. Make the
+API key available to the cron user, and FFmpeg available on `PATH` if aligning.
+
+`--quiet` / `-q` shows downloads and errors; skipped/missing-only runs stay silent.
+`--verbose` / `-v` adds diagnostics and cannot be combined with quiet mode.
+Download output goes to stderr. Failures exit nonzero; missing subtitles alone do
+not fail the run.
+
+## Development
+
+```sh
+git clone https://github.com/jtkehler/jimaku-cli
+cd jimaku-cli
+uv sync --locked
+uv run jimaku --help
+uv run pytest -q
+uv run ruff check .
+uv run basedpyright
+uv lock --check
+```
+
+[GNU GPL v3](LICENSE).
