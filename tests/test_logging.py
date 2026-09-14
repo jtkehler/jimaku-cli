@@ -13,7 +13,6 @@ from typer.testing import CliRunner
 from jimaku_cli import cli, postprocess
 from jimaku_cli.api import FileEntry, JimakuError
 from jimaku_cli.download import app
-from jimaku_cli.files import app as files_app
 from jimaku_cli.search import app as search_app
 
 runner = CliRunner()
@@ -316,13 +315,6 @@ def test_a_missing_api_key_is_reported_on_stderr(monkeypatch):
     assert result.stdout == ""
 
 
-def test_an_api_failure_in_files_is_reported_on_stderr():
-    result = runner.invoke(files_app, ["1"], obj=_ExplodingClient())
-
-    assert result.exit_code != 0
-    assert "upstream exploded" in result.stderr
-
-
 def test_an_api_failure_in_search_is_reported_on_stderr(tmp_path):
     (tmp_path / "Frieren - 01.mkv").touch()
     result = runner.invoke(search_app, [str(tmp_path)], obj=_ExplodingClient())
@@ -333,9 +325,6 @@ def test_an_api_failure_in_search_is_reported_on_stderr(tmp_path):
 
 class _ExplodingClient:
     """Every call fails, so the command's own error path is what gets exercised."""
-
-    def get_files(self, entry_id: int, episode: int | None = None):
-        raise JimakuError(500, "upstream exploded")
 
     def search_entries(self, query: str, *, anime: bool = True):
         raise JimakuError(500, "upstream exploded")

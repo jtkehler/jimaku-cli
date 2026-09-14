@@ -382,8 +382,7 @@ loads lazily under a small guard against its `basicConfig` side effect.
 ## Current state
 
 `search` implements the wizard above, including genre-first title retries, manual search input,
-release selection, and opt-in download execution. `files` remains a debugging placeholder that
-dumps API responses, rather than part of the intended command surface.
+release selection, and opt-in download execution.
 
 `--align` runs ffsubsync over the subtitle that just downloaded, replacing it in place. The CLI
 uses the native progress bar in terminals and suppresses it for cron/diagnostic output by

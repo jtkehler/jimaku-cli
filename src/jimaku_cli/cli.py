@@ -4,7 +4,6 @@ from .api import JimakuClient
 from .config import api_key
 from .config import app as config_app
 from .download import app as download_app
-from .files import app as files_app
 from .output import log_error
 from .search import app as search_app
 
@@ -30,4 +29,3 @@ def main(ctx: typer.Context):
 app.add_typer(config_app)
 app.add_typer(download_app)
 app.add_typer(search_app)
-app.add_typer(files_app)
