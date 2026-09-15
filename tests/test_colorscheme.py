@@ -15,7 +15,7 @@ def test_help_uses_jimaku_accents(
     command: list[str], environment: dict[str, str], terminal: bool, colored: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli, "api_key", "fixture-key")
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", terminal)
     monkeypatch.setattr(rich_utils, "COLOR_SYSTEM", "auto")
     monkeypatch.delenv("NO_COLOR", raising=False)

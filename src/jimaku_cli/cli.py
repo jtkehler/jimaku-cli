@@ -1,9 +1,9 @@
+import os
+
 import typer
 
 from .api import JimakuClient
 from .colorscheme import configure_typer
-from .config import api_key
-from .config import app as config_app
 from .download import app as download_app
 from .output import log_error
 from .search import app as search_app
@@ -11,23 +11,18 @@ from .search import app as search_app
 configure_typer()
 app = typer.Typer(no_args_is_help=True)
 
-# Commands that must work before an API key is configured.
-NO_CLIENT_COMMANDS = frozenset({"config"})
-
 
 @app.callback()
 def main(ctx: typer.Context):
     """A CLI for downloading subtitles from jimaku.cc."""
-    if ctx.invoked_subcommand in NO_CLIENT_COMMANDS:
-        return
+    api_key = os.environ.get("JIMAKU_API_KEY")
     if not api_key:
         log_error(
-            "No API key found. Please set the JIMAKU_API_KEY environment variable or add one to the config file (see `jimaku config`)."
+            "No API key found. Please set the JIMAKU_API_KEY environment variable."
         )
         raise typer.Exit(1)
     ctx.obj = JimakuClient(api_key=api_key)
 
 
-app.add_typer(config_app)
 app.add_typer(download_app)
 app.add_typer(search_app)

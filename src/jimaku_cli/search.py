@@ -17,10 +17,17 @@ from iterfzf import BUNDLED_EXECUTABLE
 from .api import JimakuClient
 from .colorscheme import FZF_COLORS
 from .download import (
+    DEFAULT_ALIGN,
+    DEFAULT_DOWNLOAD_ALL,
+    DEFAULT_OVERWRITE,
+    DEFAULT_PREFER_FORMAT,
+    DEFAULT_QUIET,
+    DEFAULT_RENAME,
+    DEFAULT_STRIP_IH,
+    DEFAULT_VERBOSE,
     TRANSFER_ERRORS,
     VIDEO_EXTS,
     download,
-    download_config,
     filter_release,
     parse_episode,
     parse_release,
@@ -48,12 +55,14 @@ def search(
         typer.Option(
             "--download/--no-download",
             "-d",
+            envvar="JIMAKU_SEARCH_DOWNLOAD",
             help="Also download subtitles after setup; otherwise only print the command.",
         ),
     ] = False,
     anime: Annotated[
         bool,
         typer.Option(
+            envvar="JIMAKU_SEARCH_ANIME",
             help="Search anime entries; --no-anime searches live action.",
         ),
     ] = True,
@@ -61,40 +70,46 @@ def search(
         Literal["srt", "ass", "ssa", "vtt", "sub"],
         typer.Option(
             case_sensitive=False,
+            envvar="JIMAKU_SEARCH_PREFER_FORMAT",
             help="Preferred format within each release.",
         ),
-    ] = download_config.get("prefer_format", "srt"),
+    ] = DEFAULT_PREFER_FORMAT,
     download_all: Annotated[
         bool,
         typer.Option(
             "--all/--no-all",
+            envvar="JIMAKU_SEARCH_ALL",
             help="Download every matching subtitle.",
         ),
-    ] = download_config.get("all", False),
+    ] = DEFAULT_DOWNLOAD_ALL,
     rename: Annotated[
         bool,
         typer.Option(
+            envvar="JIMAKU_SEARCH_RENAME",
             help="Name subtitles after their video files.",
         ),
-    ] = download_config.get("rename", False),
+    ] = DEFAULT_RENAME,
     overwrite: Annotated[
         bool,
         typer.Option(
+            envvar="JIMAKU_SEARCH_OVERWRITE",
             help="Re-download existing subtitles.",
         ),
-    ] = download_config.get("overwrite", False),
+    ] = DEFAULT_OVERWRITE,
     align: Annotated[
         bool,
         typer.Option(
+            envvar="JIMAKU_SEARCH_ALIGN",
             help="Align subtitles to the video's audio.",
         ),
-    ] = download_config.get("align", False),
+    ] = DEFAULT_ALIGN,
     strip_ih: Annotated[
         bool,
         typer.Option(
+            envvar="JIMAKU_SEARCH_STRIP_IH",
             help="Remove hearing-impaired annotations and ruby readings.",
         ),
-    ] = download_config.get("strip_ih", False),
+    ] = DEFAULT_STRIP_IH,
 ) -> None:
     """Choose an entry and releases; print a download command and optionally run it."""
     client: JimakuClient = ctx.obj
@@ -146,7 +161,9 @@ def search(
         if anime:
             message += ". Use --no-anime to search live action."
         log_error(message)
-    [entry_index] = choose("Entry", [f"{entry.name} (ID {entry.id})" for entry in entries])
+    [entry_index] = choose(
+        "Entry", [f"{entry.name} (ID {entry.id})" for entry in entries]
+    )
     entry = entries[entry_index]
 
     releases: list[str] = []
@@ -186,16 +203,17 @@ def search(
     command: list[str] = ["jimaku", "download", str(directory), "--id", str(entry.id)]
     for release in releases:
         command.extend(["--release", release])
-    command.extend(["--prefer-format", prefer_format])
-    # Record effective values, including false overrides of configuration defaults.
-    for name, enabled in (
-        ("all", download_all),
-        ("rename", rename),
-        ("overwrite", overwrite),
-        ("align", align),
-        ("strip-ih", strip_ih),
+    if prefer_format != DEFAULT_PREFER_FORMAT:
+        command.extend(["--prefer-format", prefer_format])
+    for name, enabled, default in (
+        ("all", download_all, DEFAULT_DOWNLOAD_ALL),
+        ("rename", rename, DEFAULT_RENAME),
+        ("overwrite", overwrite, DEFAULT_OVERWRITE),
+        ("align", align, DEFAULT_ALIGN),
+        ("strip-ih", strip_ih, DEFAULT_STRIP_IH),
     ):
-        command.append(f"--{'' if enabled else 'no-'}{name}")
+        if enabled != default:
+            command.append(f"--{'' if enabled else 'no-'}{name}")
     # Preserve shell argument data; echo strips ANSI sequences on redirected stdout.
     sys.stdout.write(shlex.join(command) + "\n")
     if run_download:
@@ -210,8 +228,8 @@ def search(
             overwrite=overwrite,
             align=align,
             strip_ih=strip_ih,
-            quiet=False,
-            verbose=False,
+            quiet=DEFAULT_QUIET,
+            verbose=DEFAULT_VERBOSE,
         )
 
 
@@ -248,28 +266,43 @@ def release_pattern(filename: str) -> str:
 def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]:
     """Choose by hidden index; fzf's UI uses stderr, not the command payload."""
     env = {
-        name: value for name, value in os.environ.items()
+        name: value
+        for name, value in os.environ.items()
         if name not in {"FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE"}
     }
     color = (
-        "--no-color" if env.get("NO_COLOR") or env.get("TERM") == "dumb"
+        "--no-color"
+        if env.get("NO_COLOR") or env.get("TERM") == "dumb"
         else f"--color={FZF_COLORS}"
     )
     header = (
         "Tab/Shift-Tab: mark in priority order; Enter: accept; Esc: cancel"
-        if multi else "Type to search; Enter to select; Esc to cancel"
+        if multi
+        else "Type to search; Enter to select; Esc to cancel"
     )
     try:
         # iterfzf's callable waits before reading stdout and can fill the result pipe.
         # run() uses communicate() to drain it while fzf is still running.
         process = subprocess.run(
-            [str(BUNDLED_EXECUTABLE or "fzf"), "--multi" if multi else "--no-multi",
-             "--sort", f"--prompt={message}: ", f"--header={header}", color,
-             "--delimiter=\t", "--with-nth=2..", "--height=40%", "--layout=reverse"],
+            [
+                str(BUNDLED_EXECUTABLE or "fzf"),
+                "--multi" if multi else "--no-multi",
+                "--sort",
+                f"--prompt={message}: ",
+                f"--header={header}",
+                color,
+                "--delimiter=\t",
+                "--with-nth=2..",
+                "--height=40%",
+                "--layout=reverse",
+            ],
             input="".join(
                 f"{index}\t{inline(label)}\n" for index, label in enumerate(labels)
             ).encode("utf-8"),
-            stdout=subprocess.PIPE, stderr=None, env=env, check=False,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            env=env,
+            check=False,
         )
     except KeyboardInterrupt as exc:
         raise typer.Abort() from exc

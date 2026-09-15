@@ -10,7 +10,6 @@ import typer
 
 from . import postprocess
 from .api import FileEntry, JimakuClient, JimakuError
-from .config import config
 from .output import Reporter, diagnostic_session, log_error
 
 logger = logging.getLogger(__name__)
@@ -24,9 +23,17 @@ SUBTITLE_EXTS = frozenset({".srt", ".ass", ".ssa", ".vtt", ".sub"})
 
 LANG = "ja"
 
-app = typer.Typer()
+DEFAULT_RELEASE: list[str] = []
+DEFAULT_PREFER_FORMAT = "srt"
+DEFAULT_DOWNLOAD_ALL = False
+DEFAULT_RENAME = False
+DEFAULT_OVERWRITE = False
+DEFAULT_ALIGN = False
+DEFAULT_STRIP_IH = False
+DEFAULT_QUIET = False
+DEFAULT_VERBOSE = False
 
-download_config = config.get("download", {})
+app = typer.Typer()
 
 
 @app.command()
@@ -46,7 +53,7 @@ def download(
                 "`re:` for a regex. Omit to take whatever is there."
             ),
         ),
-    ] = download_config.get("release", []),  # noqa: B008
+    ] = DEFAULT_RELEASE,
     prefer_format: Annotated[
         Literal["srt", "ass", "ssa", "vtt", "sub"],
         typer.Option(
@@ -56,25 +63,25 @@ def download(
                 "remain eligible as fallbacks; --all still downloads every match."
             ),
         ),
-    ] = download_config.get("prefer_format", "srt"),
+    ] = DEFAULT_PREFER_FORMAT,
     rename: Annotated[
         bool,
         typer.Option(
             help="Rename downloaded subtitles to match their video files.",
         ),
-    ] = download_config.get("rename", False),
+    ] = DEFAULT_RENAME,
     overwrite: Annotated[
         bool,
         typer.Option(
             help="Re-download episodes that already have subtitles.",
         ),
-    ] = download_config.get("overwrite", False),
+    ] = DEFAULT_OVERWRITE,
     align: Annotated[
         bool,
         typer.Option(
             help="Align subtitles to the video's audio with ffsubsync.",
         ),
-    ] = download_config.get("align", False),
+    ] = DEFAULT_ALIGN,
     strip_ih: Annotated[
         bool,
         typer.Option(
@@ -84,14 +91,14 @@ def download(
                 "Applies to .srt, .ass and .ssa; .vtt and .sub are left alone."
             ),
         ),
-    ] = download_config.get("strip_ih", False),
+    ] = DEFAULT_STRIP_IH,
     download_all: Annotated[
         bool,
         typer.Option(
             "--all/--no-all",
             help="Download all matching subtitle files. When disabled, only the best match is downloaded",
         ),
-    ] = download_config.get("all", False),
+    ] = DEFAULT_DOWNLOAD_ALL,
     quiet: Annotated[
         bool,
         typer.Option(
@@ -99,7 +106,7 @@ def download(
             "-q",
             help="Show only downloads, their basic processing results, and errors.",
         ),
-    ] = False,
+    ] = DEFAULT_QUIET,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -107,7 +114,7 @@ def download(
             "-v",
             help="Add diagnostic logs and tracebacks for caught failures.",
         ),
-    ] = False,
+    ] = DEFAULT_VERBOSE,
 ):
     """Download subtitles for the video files in a directory."""
     if quiet and verbose:
@@ -287,7 +294,7 @@ def match(pattern: str, filename: str) -> bool:
 def filter_release(
     file_candidates: list[FileEntry],
     release_patterns: list[str],
-    prefer_format: str = "srt",
+    prefer_format: str = DEFAULT_PREFER_FORMAT,
 ) -> list[FileEntry]:
     """Filter subtitles by release group, then sort by preferred format, recency, then name."""
     valid_subtitles = [

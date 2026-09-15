@@ -398,9 +398,20 @@ def select_fixture_entry(session: TerminalSession) -> None:
     assert session.stdout == b"", session.diagnostic()
 
 
+@pytest.mark.parametrize("env_options", [
+    {},
+    {
+        "JIMAKU_SEARCH_PREFER_FORMAT": "ASS",
+        "JIMAKU_SEARCH_ALL": "true",
+        "JIMAKU_SEARCH_ANIME": "false",
+        "JIMAKU_SEARCH_DOWNLOAD": "true",
+        "JIMAKU_SEARCH_RENAME": "false",
+    },
+])
 def test_search_fixture_api_emits_only_complete_command_in_mark_order(
-    child_command: ChildCommand,
+    child_command: ChildCommand, env_options: dict[str, str],
 ) -> None:
+    child_command.environment.update(env_options)
     with start_session(child_command, "search") as session:
         select_fixture_entry(session)
         # Mix Shift-Tab and Tab; order must be Gamma, Alpha, not listing order.
@@ -413,10 +424,12 @@ def test_search_fixture_api_emits_only_complete_command_in_mark_order(
         assert session.finish() == 0, session.diagnostic()
         expected = [
             "jimaku", "download", str(child_command.videos.resolve()), "--id", "99",
-            "--release", "Gamma", "--release", "Alpha", "--prefer-format", "srt",
-            "--no-all", "--no-rename", "--no-overwrite", "--no-align", "--no-strip-ih",
+            "--release", "Gamma", "--release", "Alpha",
         ]
-        assert session.stdout.decode() == shlex.join(expected) + "\n", session.diagnostic()
+        if env_options:
+            expected.extend(["--prefer-format", "ass", "--all"])
+        assert f"anime={not bool(env_options)}".encode() in session.terminal
+        assert session.stdout.endswith(b"\n") and session.stdout.count(b"\n") == 1
         assert shlex.split(session.stdout.decode()) == expected
         assert session.terminal.count(FZF_STARTED) == 2
         assert b"[fixture API] get_files 99 1" in session.terminal

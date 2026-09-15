@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,11 +91,7 @@ def run(
     strip_ih: bool = False,
     align: bool = False,
 ):
-    """Invoke `download` against a stub, pinning every option the tests rely on.
-
-    `--release re:.` matches anything, so the ambient config file cannot reach in and
-    change which candidates a test sees.
-    """
+    """Invoke `download` against a stub with explicit release and handling options."""
     return runner.invoke(
         app,
         [
@@ -305,17 +302,106 @@ def test_the_summary_counts_every_outcome_by_default(library):
     assert "summary: 1 downloaded, 1 skipped, 0 missing, 0 failed" in result.stderr
 
 
-def test_a_missing_api_key_is_reported_on_stderr(monkeypatch):
-    monkeypatch.setattr(cli, "api_key", None)
+def test_root_download_ignores_search_preferences(
+    library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = library(1)
+    files = [
+        FileEntry(
+            f"https://example.invalid/{name}", name, len(SUBTITLE_BODY),
+            "2026-01-01T00:00:00Z",
+        )
+        for name in ("[A] Show - 01.ass", "[A] Show - 01.srt", "[B] Show - 01.srt")
+    ]
+    client = StubClient({1: files})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    monkeypatch.setenv("JIMAKU_SEARCH_ALL", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "ass")
+    monkeypatch.setenv("JIMAKU_SEARCH_ALIGN", "true")
+    args = ["download", str(directory), "--id", "1"]
+    video = directory / video_name(1)
+    srt = directory / "[A] Show - 01.srt"
+    ass = directory / "[A] Show - 01.ass"
 
-    result = runner.invoke(cli.app, ["download", "--id", "1"])
+    default = runner.invoke(cli.app, args, catch_exceptions=False)
 
-    assert result.exit_code != 0
-    assert "JIMAKU_API_KEY" in result.stderr
-    assert result.stdout == ""
+    assert default.exit_code == 0, default.stderr
+    assert default.stdout == ""
+    assert srt.read_text(encoding="utf-8") == SUBTITLE_BODY
+    assert set(directory.iterdir()) == {video, srt}
+    assert client.downloaded == [srt]
+    assert "ffsubsync" not in default.stderr
+
+    monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "zip")
+    monkeypatch.setenv("JIMAKU_SEARCH_ALIGN", "invalid")
+    repeated = runner.invoke(cli.app, args, catch_exceptions=False)
+
+    assert repeated.exit_code == 0, repeated.stderr
+    assert repeated.stdout == ""
+    assert "[skip]" in repeated.stderr
+    assert srt.read_text(encoding="utf-8") == SUBTITLE_BODY
+    assert set(directory.iterdir()) == {video, srt}
+    assert client.downloaded == [srt]
+
+    explicit = runner.invoke(
+        cli.app, [*args, "--prefer-format", "ASS", "--overwrite"],
+        catch_exceptions=False,
+    )
+
+    assert explicit.exit_code == 0, explicit.stderr
+    assert explicit.stdout == ""
+    assert ass.read_text(encoding="utf-8") == SUBTITLE_BODY
+    assert srt.read_text(encoding="utf-8") == SUBTITLE_BODY
+    assert set(directory.iterdir()) == {video, srt, ass}
+    assert client.downloaded == [srt, ass]
 
 
-def test_an_api_failure_in_search_is_reported_on_stderr(tmp_path):
+@pytest.mark.parametrize("missing_key", [None, ""])
+def test_a_missing_api_key_is_reported_on_stderr(library, monkeypatch, missing_key):
+    directory = library(1)
+    video = directory / video_name(1)
+    client = StubClient({1: [remote(1)]})
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    if missing_key is None:
+        monkeypatch.delenv("JIMAKU_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("JIMAKU_API_KEY", missing_key)
+    args = ["download", str(directory), "--id", "1"]
+
+    missing = runner.invoke(cli.app, args, catch_exceptions=False)
+
+    assert missing.exit_code == 1
+    assert "JIMAKU_API_KEY" in missing.stderr
+    assert missing.stdout == ""
+    assert list(directory.iterdir()) == [video]
+    assert client.downloaded == []
+
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    present = runner.invoke(cli.app, args, catch_exceptions=False)
+
+    assert present.exit_code == 0, present.stderr
+    assert present.stdout == ""
+    saved = directory / subtitle_name(1)
+    assert saved.read_text(encoding="utf-8") == SUBTITLE_BODY
+    assert client.downloaded == [saved]
+
+    monkeypatch.delenv("JIMAKU_API_KEY", raising=False)
+    removed = runner.invoke(cli.app, args, catch_exceptions=False)
+
+    assert removed.exit_code == 1
+    assert "JIMAKU_API_KEY" in removed.stderr
+    assert removed.stdout == ""
+    assert saved.read_text(encoding="utf-8") == SUBTITLE_BODY
+    assert set(directory.iterdir()) == {video, saved}
+    assert client.downloaded == [saved]
+
+
+def test_an_api_failure_in_search_is_reported_on_stderr(tmp_path, monkeypatch):
+    for name in tuple(os.environ):
+        if name.startswith("JIMAKU_SEARCH_"):
+            monkeypatch.delenv(name)
     (tmp_path / "Frieren - 01.mkv").touch()
     result = runner.invoke(search_app, [str(tmp_path)], obj=_ExplodingClient())
 
@@ -577,7 +663,7 @@ def test_conflicting_output_flags_do_no_work(library, monkeypatch, flags):
         def get_files(self, entry_id, episode=None):
             raise AssertionError("invalid flags must be rejected before work")
 
-    monkeypatch.setattr(cli, "api_key", "fixture-key")
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: NoWorkClient())
     result = runner.invoke(
         cli.app,

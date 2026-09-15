@@ -10,7 +10,7 @@ The tool is used two ways, and both matter equally:
 
 This dual use drives most of what follows. An unattended run must be idempotent, must report
 clearly enough that a mailed log is actionable, and must never require a prompt. Anything decided
-interactively must be expressible as flags or config.
+interactively must be expressible as flags; search preferences may come from per-option environment variables.
 
 ## Commands
 
@@ -25,8 +25,8 @@ left alone. Non-interactive and safe to re-run.
 |---|---|
 | `--id N` | jimaku entry ID (required) |
 | `--release PATTERN` | Repeatable; order is significant. Matched against the release group or streaming service in the remote filename, case-insensitively. Prefix with `re:` for a regex. Omit to accept anything. |
-| `--prefer-format FORMAT` | Prefer `srt` by default within each release priority. Accepts `srt`, `ass`, `ssa`, `vtt`, and `sub`, case-insensitively. Other supported formats remain eligible; no conversion. Config: `[download] prefer_format = "srt"`. |
-| `--all` / `--no-all` | Download every matching release, each to its own file. Off by default: only the best match is written. `--no-all` overrides a true config default. |
+| `--prefer-format FORMAT` | Prefer `srt` by default within each release priority. Accepts `srt`, `ass`, `ssa`, `vtt`, and `sub`, case-insensitively. Other supported formats remain eligible; no conversion. |
+| `--all` / `--no-all` | Download every matching release, each to its own file. Off by default: only the best match is written. Later explicit boolean settings win. |
 | `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename apart from lowercasing its extension. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
 | `--align` | Time-align the subtitle against the video's audio, with ffsubsync. |
@@ -98,9 +98,12 @@ Anitopy with a GuessIt fallback, and named releases still use GuessIt's group/se
 
 **`search` takes no `--release`; it produces one.** It does take the options that describe what to
 do with files once filtered — `--prefer-format`, `--all`, `--rename`, `--overwrite`, `--align`,
-`--strip-ih` — including their negative boolean forms. Effective values, including false overrides
-of config defaults, are recorded in the command. Selecting a file chooses its release, not an
-exact file or extension; `--prefer-format` controls ranking within that release.
+`--strip-ih` — including their negative boolean forms. Only nondefault resolved preferences
+are recorded in the command: compare against the shared `DEFAULT_*` constants in `download.py`,
+emitting a positive or negative flag only when a boolean differs from its default. Currently this
+omits `srt` and false handling settings. Immediate execution still passes every resolved setting directly
+to `download`, including false values. Selecting a file chooses its release, not an exact file or
+extension; `--prefer-format` controls ranking within that release.
 
 | Flag | Behavior |
 |---|---|
@@ -126,20 +129,39 @@ Failed or cancelled setup emits no command and starts no download. With `--downl
 is emitted before downloading begins, and download failures propagate a nonzero exit.
 Missing subtitles are reported and skipped, but setup with no usable releases exits nonzero.
 
-### `jimaku config`
+## Authentication and search preferences
 
-Reports where the config file lives.
+An API key is required for search and download; root help remains available without one. Read
+`JIMAKU_API_KEY` on every root invocation, not at import time. An absent or empty value reports
+how to set it and exits nonzero. No config file or other credential source is consulted, and
+there is no `config` command.
 
-## Configuration
+Each search option declares its own native `typer.Option(envvar=...)`: `JIMAKU_SEARCH_DOWNLOAD`,
+`JIMAKU_SEARCH_ANIME`, `JIMAKU_SEARCH_PREFER_FORMAT`, `JIMAKU_SEARCH_ALL`,
+`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_ALIGN`, and
+`JIMAKU_SEARCH_STRIP_IH`. Typer reads values on each invocation. Explicit command-line options
+take precedence over environment values, which take precedence over built-in defaults. Unset
+or empty variables use defaults. Native boolean and format conversion applies; values are not
+shell option strings and are never tokenized. The directory remains a positional argument,
+and search constructs releases rather than accepting release preferences.
 
-An API key is required for everything except `config`; without one the tool explains how to set
-it and exits nonzero. It comes from `JIMAKU_API_KEY` or from the config file, environment first.
+Keep all parsing, validation, help, and completion native to Typer. There is no command subclass,
+custom environment parser, or private Click import. Invalid environment values exit 2 before
+work, unless an explicit CLI value overrides them. Boolean values accept `true`/`1`/`yes`/`on`
+and `false`/`0`/`no`/`off`, case-insensitively. Use `env -u VARIABLE jimaku search .` to ignore
+one preference for an invocation.
 
-The config file is TOML in the platform's user config directory. It sets **defaults for command
-options** — a `[download]` table supplies defaults for `download`'s flags and the corresponding
-handling options in `search`. Search ignores configured release patterns and constructs its own
-list. The config is deliberately not a database: it holds no directory-to-entry mappings and no
-per-series state. Explicit flags always win over defaults.
+Download's built-in option defaults live as `DEFAULT_*` constants at the top of `download.py`.
+Search imports the shared handling defaults; command emission compares resolved
+values against those same constants, including emitting negative flags for false overrides of
+true defaults. The matcher's format default uses the same constant. Search-only defaults remain
+anime and print-only. Download defaults currently prefer `srt` with all handling booleans false.
+
+Download reads neither search preferences nor config files: its built-in defaults and explicit
+arguments are the entire handling contract. A generated command captures nondefault resolved
+preferences and is POSIX-quoted with `shlex.join`; replay it with `sh`, including from fish.
+Replay still needs the API key, executable, and original absolute media paths. Supply credentials
+separately in cron's execution environment and keep them private.
 
 ## Behavioral rules
 
@@ -397,9 +419,13 @@ ffsubsync sees, because their long `♬～` music cues carry a wave dash and so 
 non-dialogue filter. Each step has its own error handling, so a failure in one still leaves the
 other's work in place. There is no
 `--dry-run`, no episode-number offset for absolute-vs-per-season numbering, no format conversion,
-and no structured output. `config` reads but does not write.
+and no structured output. Authentication and search preferences are environment-only.
 
 ## Development
+
+Use [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/) for all
+commit messages: `<type>[optional scope][!]: <description>`. Use `feat` for features and
+`fix` for bug fixes; mark breaking changes with `!` or a `BREAKING CHANGE:` footer.
 
 Use `uv run` for development and verification rather than separate package builds; do not create
 `dist/` for routine checks:
@@ -426,8 +452,8 @@ child processes on failure. Distinguish fixture-based API tests from live metada
 Manage dependencies with `uv add`/`uv remove`, keep `uv.lock` synchronized, and check it with
 `uv lock --check`. Retain `iterfzf` for its executable and `ffsubsync` for lazy-loaded alignment,
 even though their use is not an ordinary top-level callable import. Fuzzy selection comes from fzf;
-configuration is read-only and uses standard-library `tomllib`, so neither a separate Python fuzzy
-matcher nor a TOML-writing library is needed.
+search preferences use Typer's native `envvar` support and command quoting uses standard-library
+`shlex`, so neither a separate Python fuzzy matcher, a config-directory dependency, nor a TOML library is needed.
 
 ## Non-goals
 

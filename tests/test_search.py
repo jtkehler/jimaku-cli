@@ -25,6 +25,10 @@ def fzf_input(monkeypatch: pytest.MonkeyPatch) -> None:
     Space-separated indices represent items marked in that order. Manual title
     prompts still use real Typer input. Real fzf is exercised by the PTY tests.
     """
+    for name in tuple(os.environ):
+        if name.startswith("JIMAKU_SEARCH_"):
+            monkeypatch.delenv(name)
+
     def select(
         args: list[str], *, input: bytes, **_options: object
     ) -> subprocess.CompletedProcess[bytes]:
@@ -156,7 +160,7 @@ def test_multi_selection_deduplicates_releases_and_replays_download(
     def save_subtitle(_url: str, destination: Path) -> None:
         _ = destination.write_bytes(b"fixture")
 
-    monkeypatch.setattr(cli, "api_key", "fixture-key")
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", make_client)
     runner = CliRunner()
     search = runner.invoke(
@@ -526,7 +530,9 @@ def test_search_passes_handling_options_to_the_emitted_command(tmp_path, enabled
     assert command[command.index("--id") + 1] == "99"
     assert command[command.index("--prefer-format") + 1] == "ass"
     assert releases(command) == ["AssGroup"]
-    assert all(flag in command for flag in flags)
+    for name in switches:
+        assert (f"--{name}" in command) is enabled
+        assert f"--no-{name}" not in command
     assert "--no-anime" not in command
     assert client.searched == [("Show", False)]
     assert client.listed == [(99, 1)]
@@ -764,6 +770,158 @@ def test_unsuccessful_fzf_selection_aborts_without_a_command(
     assert "Aborted" in result.stderr
 
 
+def test_search_resolves_environment_preferences_on_each_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "Show - 01.mkv"
+    video.touch()
+    client = SearchClient({1: [
+        subtitle("[SrtGroup] Show - 01.srt"),
+        subtitle("[AssGroup] Show - 01.ass"),
+    ]})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    preferences = {
+        "JIMAKU_SEARCH_PREFER_FORMAT": "ASS",
+        "JIMAKU_SEARCH_ALL": "true",
+        "JIMAKU_SEARCH_RENAME": "true",
+        "JIMAKU_SEARCH_OVERWRITE": "true",
+        "JIMAKU_SEARCH_ALIGN": "true",
+        "JIMAKU_SEARCH_STRIP_IH": "true",
+        "JIMAKU_SEARCH_ANIME": "false",
+        "JIMAKU_SEARCH_DOWNLOAD": "true",
+    }
+    for name, value in preferences.items():
+        monkeypatch.setenv(name, value)
+    runner = CliRunner()
+    switches = ["all", "rename", "overwrite", "align", "strip-ih"]
+    base = ["jimaku", "download", str(tmp_path.resolve()), "--id", "42"]
+
+    inherited = runner.invoke(
+        cli.app, ["search", str(tmp_path), "--no-download"],
+        input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert inherited.exit_code == 0, inherited.stderr
+    assert shlex.split(inherited.stdout) == [
+        *base, "--release", "AssGroup", "--prefer-format", "ass",
+        *(f"--{name}" for name in switches),
+    ]
+    assert client.searched == [("Show", False)]
+    assert client.listed == [(42, 1)]
+    assert list(tmp_path.iterdir()) == [video]
+
+    overridden = runner.invoke(
+        cli.app,
+        ["search", str(tmp_path), "--prefer-format", "SRT",
+         *(f"--no-{name}" for name in switches), "--anime", "--no-download"],
+        input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert overridden.exit_code == 0, overridden.stderr
+    assert shlex.split(overridden.stdout) == [*base, "--release", "SrtGroup"]
+    assert client.searched == [("Show", False), ("Show", True)]
+    assert client.listed == [(42, 1), (42, 1)]
+    assert list(tmp_path.iterdir()) == [video]
+
+    for name in preferences:
+        monkeypatch.delenv(name)
+    defaults = runner.invoke(
+        cli.app, ["search", str(tmp_path)],
+        input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert defaults.exit_code == 0, defaults.stderr
+    assert shlex.split(defaults.stdout) == [*base, "--release", "SrtGroup"]
+    assert client.searched == [("Show", False), ("Show", True), ("Show", True)]
+    assert client.listed == [(42, 1), (42, 1), (42, 1)]
+    assert list(tmp_path.iterdir()) == [video]
+
+
+def test_search_environment_and_cli_use_native_last_occurrence_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "Show - 01.mkv"
+    video.touch()
+    client = SearchClient({1: [
+        subtitle("[SrtGroup] Show - 01.srt"),
+        subtitle("[AssGroup] Show - 01.ass"),
+    ]})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_ALIGN", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "ASS")
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["search", str(tmp_path), "--align", "--no-align",
+         "--prefer-format", "ass", "--prefer-format", "srt"],
+        input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert shlex.split(result.stdout) == [
+        "jimaku", "download", str(tmp_path.resolve()), "--id", "42",
+        "--release", "SrtGroup", "--rename",
+    ]
+    assert list(tmp_path.iterdir()) == [video]
+
+
+@pytest.mark.parametrize(
+    "envvar, value, diagnostic",
+    [
+        ("JIMAKU_SEARCH_PREFER_FORMAT", "zip", "--prefer-format"),
+        ("JIMAKU_SEARCH_ALIGN", "maybe", "--align"),
+    ],
+)
+def test_invalid_search_environment_is_rejected_before_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    envvar: str, value: str, diagnostic: str,
+) -> None:
+    video = tmp_path / "Show - 01.mkv"
+    video.touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    monkeypatch.setenv(envvar, value)
+
+    result = CliRunner().invoke(
+        cli.app, ["search", str(tmp_path)], catch_exceptions=False
+    )
+
+    assert result.exit_code == 2, result.stderr
+    assert envvar in result.stderr
+    assert diagnostic in result.stderr
+    assert result.stdout == ""
+    assert client.searched == client.listed == []
+    assert list(tmp_path.iterdir()) == [video]
+
+
+def test_cli_options_override_invalid_search_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "Show - 01.mkv"
+    video.touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "invalid")
+    monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "zip")
+
+    result = CliRunner().invoke(
+        cli.app, ["search", str(tmp_path), "--rename", "--prefer-format", "SRT"],
+        input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert shlex.split(result.stdout) == [
+        "jimaku", "download", str(tmp_path.resolve()), "--id", "42",
+        "--release", "Group", "--rename",
+    ]
+    assert list(tmp_path.iterdir()) == [video]
+
+
 @pytest.mark.parametrize("flags", [["--release", "Group"], ["--prefer-format", "zip"]])
 def test_invalid_options_are_rejected_before_searching(tmp_path, flags):
     client = SearchClient({})
@@ -810,20 +968,36 @@ def test_emitted_command_preserves_ansi_directory(tmp_path):
     assert "\x1b" not in result.stderr
 
 
-def test_emitted_command_runs_through_the_real_download_command(tmp_path, monkeypatch):
-    (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
-    monkeypatch.setattr(cli, "api_key", "fixture-key")
+def test_emitted_command_runs_through_the_real_download_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "Jack's 日本語 $(not-a-command)"
+    directory.mkdir()
+    video = directory / "Show - 01.mkv"
+    video.touch()
+    client = SearchClient({1: [
+        subtitle("[Group] Show - 01.ass"),
+        subtitle("[Group] Show - 01.srt"),
+    ]})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "ass")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     runner = CliRunner()
     search = runner.invoke(
         cli.app,
-        ["search", str(tmp_path), "--no-all", "--no-rename", "--no-overwrite",
-         "--no-align", "--no-strip-ih", "--prefer-format", "srt"],
+        ["search", str(directory)],
         input="1\n1\n", catch_exceptions=False,
     )
     assert search.exit_code == 0, search.stderr
-    assert not list(tmp_path.glob("*.srt"))
+    assert shlex.split(search.stdout)[:3] == ["jimaku", "download", str(directory.resolve())]
+    assert list(directory.iterdir()) == [video]
+
+    replay_directory = tmp_path / "replay"
+    replay_directory.mkdir()
+    monkeypatch.chdir(replay_directory)
+    monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "invalid")
+    monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "zip")
 
     # Only the remote transfer is a fixture; replay the actual generated arguments.
     monkeypatch.setattr(client, "download_file", lambda url, dest: dest.write_bytes(b"subtitle"))
@@ -831,7 +1005,10 @@ def test_emitted_command_runs_through_the_real_download_command(tmp_path, monkey
 
     assert download.exit_code == 0, download.stderr
     assert download.stdout == ""
-    assert (tmp_path / "[Group] Show - 01.srt").read_bytes() == b"subtitle"
+    saved = directory / "Show - 01.group.ja.ass"
+    assert saved.read_bytes() == b"subtitle"
+    assert set(directory.iterdir()) == {video, saved}
+    assert list(replay_directory.iterdir()) == []
     assert client.listed == [(42, 1), (42, 1)]
 
 
@@ -842,7 +1019,7 @@ def test_unparsed_release_command_replay_preserves_codec(tmp_path, monkeypatch):
     second = subtitle("Show - 265 (CR 1920x1080 x264 AAC).ass")
     wrong_codec = subtitle("Show - 265 (CR 1920x1080 x265 AAC).srt")
     client = SearchClient({264: [first], 265: [wrong_codec, second]})
-    monkeypatch.setattr(cli, "api_key", "fixture-key")
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     runner = CliRunner()
 
@@ -876,7 +1053,7 @@ def test_versioned_release_command_replay_preserves_dotted_codec(tmp_path, monke
     selected = subtitle("Show - 264v2 (CR 1920x1080 h.264 AAC).ass")
     wrong_codec = subtitle("Show - 264v2 (CR 1920x1080 h.265 AAC).srt")
     client = SearchClient({264: [selected, wrong_codec]})
-    monkeypatch.setattr(cli, "api_key", "fixture-key")
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     runner = CliRunner()
 
@@ -903,12 +1080,16 @@ def test_versioned_release_command_replay_preserves_dotted_codec(tmp_path, monke
     assert client.listed == [(42, 264), (42, 264)]
 
 
-@pytest.mark.parametrize("flag", ["--download", "-d"])
+@pytest.mark.parametrize(
+    "flags, env_download",
+    [(["--download"], ""), (["-d"], "false"), ([], "true")],
+)
 def test_search_can_download_after_selecting_releases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], env_download: str
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
     client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    monkeypatch.setenv("JIMAKU_SEARCH_DOWNLOAD", env_download)
 
     def save_subtitle(_url: str, destination: Path) -> None:
         _ = destination.write_bytes(b"fixture subtitle")
@@ -916,8 +1097,7 @@ def test_search_can_download_after_selecting_releases(
     monkeypatch.setattr(client, "download_file", save_subtitle)
     result = CliRunner().invoke(
         app,
-        [str(tmp_path), flag, "--no-all", "--no-rename", "--no-overwrite",
-         "--no-align", "--no-strip-ih", "--prefer-format", "srt"],
+        [str(tmp_path), *flags],
         obj=client, input="1\n1\n", catch_exceptions=False,
     )
 
@@ -927,7 +1107,7 @@ def test_search_can_download_after_selecting_releases(
     command = shlex.split(result.stdout)
     assert command[:3] == ["jimaku", "download", str(tmp_path.resolve())]
     assert releases(command) == ["Group"]
-    assert flag not in command
+    assert not {"--download", "--no-download", "-d", "--anime", "--no-anime"} & set(command)
     assert result.stdout.count("\n") == 1
     assert "[download]" in result.stderr
 
@@ -950,37 +1130,6 @@ def test_search_download_opt_out_only_emits_the_command(
     assert result.stdout.startswith("jimaku download ")
     assert result.stdout.count("\n") == 1
     assert "[download]" not in result.stderr
-
-
-def test_search_download_receives_all_selected_options(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    for episode in (1, 2):
-        (tmp_path / f"Show - {episode:02}.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[First] Show - 01.srt"), subtitle("[First] Show - 01.ass")],
-        2: [subtitle("[Second] Show - 02.ass")],
-    })
-    calls: list[dict[str, object]] = []
-
-    def record_download(_ctx: typer.Context, **options: object) -> None:
-        calls.append(options)
-
-    monkeypatch.setattr("jimaku_cli.search.download", record_download)
-    result = CliRunner().invoke(
-        app,
-        [str(tmp_path), "--download", "--prefer-format", "ASS", "--all",
-         "--rename", "--overwrite", "--align", "--strip-ih"],
-        obj=client, input="1\n1\n1\n", catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0, result.stderr
-    assert calls == [{
-        "entry_id": 42, "directory": tmp_path.resolve(),
-        "release": ["First", "Second"], "prefer_format": "ass",
-        "download_all": True, "rename": True, "overwrite": True,
-        "align": True, "strip_ih": True, "quiet": False, "verbose": False,
-    }]
 
 
 def test_search_propagates_download_failure(

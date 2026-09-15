@@ -16,21 +16,60 @@ fallback. [FFmpeg](https://ffmpeg.org/download.html) is required only for `--ali
 ## Setup
 
 Generate an API key on your [Jimaku account page](https://jimaku.cc/account).
-Run `jimaku config` to find the config path, then create the file and its parent
-directory:
+Authentication comes only from `JIMAKU_API_KEY`. Each search option can also read
+its own environment variable; configuration files are not read.
 
-```toml
-api_key = "your-api-key"
-
-# Optional defaults
-[download]
-rename = true
-prefer_format = "srt"
+```bash
+export JIMAKU_API_KEY='your-api-key'
+export JIMAKU_SEARCH_RENAME=true
+export JIMAKU_SEARCH_ALIGN=true
+jimaku search . --no-align
 ```
 
-Keep the file private. `JIMAKU_API_KEY` in the environment overrides the saved key.
-Command-line flags override config defaults, including negative flags such as
-`--no-rename`. Handling defaults also apply to `search`; release choices do not.
+Bash preferences can go in `~/.bashrc`. In fish:
+
+```fish
+set -gx JIMAKU_API_KEY 'your-api-key'
+set -Ux JIMAKU_SEARCH_RENAME true
+set -Ux JIMAKU_SEARCH_ALIGN true
+jimaku search . --no-align
+```
+
+Fish's `-Ux` stores an exported universal preference. The API-key examples export
+into the current shell; supply `JIMAKU_API_KEY` separately in cron's execution
+environment. Keep credentials private.
+
+Typer reads these values on every search invocation. Explicit command-line
+options take precedence; unset or empty variables use the built-in defaults.
+
+| Search option | Environment variable |
+|---|---|
+| `--download` / `--no-download` | `JIMAKU_SEARCH_DOWNLOAD` |
+| `--anime` / `--no-anime` | `JIMAKU_SEARCH_ANIME` |
+| `--prefer-format` | `JIMAKU_SEARCH_PREFER_FORMAT` |
+| `--all` / `--no-all` | `JIMAKU_SEARCH_ALL` |
+| `--rename` / `--no-rename` | `JIMAKU_SEARCH_RENAME` |
+| `--overwrite` / `--no-overwrite` | `JIMAKU_SEARCH_OVERWRITE` |
+| `--align` / `--no-align` | `JIMAKU_SEARCH_ALIGN` |
+| `--strip-ih` / `--no-strip-ih` | `JIMAKU_SEARCH_STRIP_IH` |
+
+Boolean values accept `true`, `1`, `yes`, or `on`, and `false`, `0`, `no`, or
+`off`, case-insensitively. Format values are `srt`, `ass`, `ssa`, `vtt`, or `sub`,
+also case-insensitively. Values are not shell option strings: for example, set
+`JIMAKU_SEARCH_PREFER_FORMAT=ass`, not `--prefer-format ass`. The directory stays
+on the command line, and the wizard still constructs release priorities.
+
+To ignore the two example preferences for one invocation:
+
+```sh
+env -u JIMAKU_SEARCH_RENAME -u JIMAKU_SEARCH_ALIGN jimaku search .
+```
+
+In the examples above, the generated download command includes `--rename` but
+neither `--align` nor `--no-align`: the final align value equals download's false
+default. A final `srt` format preference is likewise omitted. Only preferences
+that differ from download's defaults are emitted. Download uses only its built-in
+defaults and explicit arguments, never search preferences.
 
 ## Usage
 
@@ -40,7 +79,7 @@ Subdirectories are not scanned.
 ```sh
 jimaku search . --rename --download  # choose an entry and releases, then download
 jimaku search . --no-anime           # search live action instead of anime
-jimaku search .                      # print a reusable command without downloading
+jimaku search . --no-download        # print a reusable command without downloading
 ```
 
 Type to filter, use Tab/Shift-Tab to mark releases in priority order, and Enter to
@@ -60,13 +99,17 @@ Existing output files are skipped unless `--overwrite` is set.
 
 Options shared by `search` and `download`:
 
-- `--rename`: name subtitles after the video, adding the release and `.ja` tag.
+- `--rename` / `--no-rename`: name subtitles after the video, adding the release and `.ja` tag.
 - `--prefer-format`: prefer `srt` (default), `ass`, `ssa`, `vtt`, or `sub` within
   each release. Other formats remain eligible; files are not converted.
-- `--all`: download every match instead of the best one per episode.
-- `--overwrite`: re-download existing targets.
-- `--strip-ih`: remove annotations and some ruby readings from SRT/ASS/SSA.
-- `--align`: synchronize timing to the video's audio with ffsubsync.
+- `--all` / `--no-all`: download every match instead of the best one per episode.
+- `--overwrite` / `--no-overwrite`: re-download existing targets.
+- `--strip-ih` / `--no-strip-ih`: remove annotations and some ruby readings from SRT/ASS/SSA.
+- `--align` / `--no-align`: synchronize timing to the video's audio with ffsubsync.
+
+All shared booleans default to false. Search alone accepts `--anime` / `--no-anime`
+(anime by default) and `--download` / `--no-download` (print-only by default).
+Explicit negative flags override enabled search preferences.
 
 Processing modifies downloaded subtitles in place. Stripping runs before alignment
 and **can remove real dialogue**; it is off by default. See
@@ -75,12 +118,17 @@ limitations. Use `jimaku search --help` or `jimaku download --help` for all opti
 
 ## Scripts and cron
 
-Search writes a POSIX-shell-quoted command to stdout and prompts to stderr.
+Search writes only the POSIX-shell-quoted command to stdout; all prompts,
+diagnostics, progress, and download output stay on stderr. Replay ignores
+all `JIMAKU_SEARCH_*` variables and config files, but still requires `JIMAKU_API_KEY`, the
+`jimaku` executable, and the original media paths.
 To save and run it only after successful setup:
 
 ```sh
 jimaku search . --rename --no-download > download-subtitles.sh && sh download-subtitles.sh
 ```
+
+Fish users should also replay this POSIX payload with `sh`, not fish.
 
 Do not replay a command emitted with `--download` unless you want a second pass.
 Use `download`, not interactive `search`, for cron:
@@ -89,8 +137,9 @@ Use `download`, not interactive `search`, for cron:
 0 * * * * /absolute/path/to/jimaku download "/path/to/series" --id 123 --release "GroupA" --rename --quiet
 ```
 
-Replace the example values; `command -v jimaku` gives the executable path. Make the
-API key available to the cron user, and FFmpeg available on `PATH` if aligning.
+Replace the example values; `command -v jimaku` gives the executable path. Make
+`JIMAKU_API_KEY` available in cron's execution environment, and FFmpeg available on
+`PATH` if aligning.
 
 `--quiet` / `-q` shows downloads and errors; skipped/missing-only runs stay silent.
 `--verbose` / `-v` adds diagnostics and cannot be combined with quiet mode.
@@ -109,5 +158,10 @@ uv run ruff check .
 uv run basedpyright
 uv lock --check
 ```
+
+Download's built-in option defaults are the `DEFAULT_*` constants near the top of
+`src/jimaku_cli/download.py`. Search shares them for its handling defaults and
+generated-command comparisons, including negative flags when overriding a true
+default. Change the constants rather than duplicating values across commands.
 
 [GNU GPL v3](LICENSE).
