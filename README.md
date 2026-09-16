@@ -82,9 +82,10 @@ jimaku search . --no-anime           # search live action instead of anime
 jimaku search . --no-download        # print a reusable command without downloading
 ```
 
-Type to filter, use Tab/Shift-Tab to mark releases in priority order, and Enter to
-accept. Esc or Ctrl-C cancels. Search asks for fallback releases only when needed;
-choosing several does not enable `--all`.
+Type to filter and Enter to accept. In the entry picker, Ctrl-R starts a new search
+with a manually entered title if none of the results is right. Use Tab/Shift-Tab to
+mark releases in priority order. Esc or Ctrl-C cancels. Search asks for fallback
+releases only when needed; choosing several does not enable `--all`.
 
 For repeat downloads, use the generated command or supply a Jimaku entry ID and
 release names yourself (replace the example values):

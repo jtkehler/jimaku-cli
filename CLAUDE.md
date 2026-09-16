@@ -51,7 +51,8 @@ A session:
 
 1. Sort the directory's videos by episode number, with numberless videos last and filenames
    breaking ties.
-2. Search entries using the first video's parsed title; prompt to choose an entry.
+2. Search entries using the first video's parsed title; prompt to choose an entry or press Ctrl-R
+   to search again with a manual query.
 3. List that episode's files; use fzf to choose one or more, marking in priority order.
 4. Record the chosen files' releases in mark order, deduplicating patterns without reordering and
    falling back to a regex synthesized from the filename when the release can't be parsed.
@@ -69,10 +70,12 @@ the existing any-match fast-forward and download ranking remain unchanged.
 
 Entry selection is single-choice fzf; subtitle selection enables multi-choice. Type to fuzzy-filter,
 use Tab/Shift-Tab to mark releases, Enter to accept marks (or the highlighted item if none are marked),
-and Esc/Ctrl-C to cancel. Use hidden numeric indices to map escaped labels back to original objects,
-not label equality or filename parsing. The shared `choose()` helper returns those indices in mark
-order. Search needs an interactive terminal, but stdout can be redirected to save the command;
-`download` remains the unattended interface.
+and Esc/Ctrl-C to cancel. In the entry picker only, Ctrl-R returns to `Search title:` for a new
+manual query, even when the local fuzzy filter has no matches. Use hidden numeric indices to map
+escaped labels back to original objects, not label equality or filename parsing. The shared
+`choose()` helper returns those indices in mark order, with an empty list reserved for an enabled
+Ctrl-R retry. Search needs an interactive terminal, but stdout can be redirected to save the
+command; `download` remains the unattended interface.
 
 `iterfzf` supplies its bundled fzf executable. Invoke it with `subprocess.run`, UTF-8 input,
 captured stdout, and inherited stderr so the UI stays out of the command payload. The iterfzf
@@ -83,18 +86,21 @@ do not replace it with a wait-before-read wrapper. Supported wheels bundle fzf, 
 
 Exclude `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` from the child's environment so shell
 defaults cannot auto-accept entries or change the result protocol. Leave the parent environment
-unchanged. Cancellation, an empty selection, or a nonzero fzf exit aborts setup; executable launch
-errors go through `log_error`. No failed selection emits a command or starts a download.
+unchanged. Except for an explicit Ctrl-R retry (which fzf can report with exit 1 when its local
+filter has no matches), cancellation, an empty selection, or a nonzero fzf exit aborts setup.
+Executable launch errors go through `log_error`. No failed selection emits a command or starts
+a download.
 
 **Title search is genre-first, then one alternate, then user input.** Use Anitopy's title first
 for anime and GuessIt's first for `--no-anime`. If that title is unusable or the search returns no
 entries, try the other parser's distinct, usable title. When automatic titles run out, ask for a
 `Search title:` and repeat manual searches until there are results or the user cancels. Manual
 queries retain the same anime/live-action filter. Never choose an entry automatically: the first
-nonempty result list goes to single-choice fzf entry selection.
+nonempty result list goes to single-choice fzf entry selection. Ctrl-R skips any remaining automatic
+title and prompts for a manual query immediately; it can be used again on subsequent results.
 
 An empty search is recoverable, so the query loop continues after reporting it. The loop exits
-normally only when entries are nonempty. API/network errors instead exit nonzero immediately;
+normally only after an entry is selected. API/network errors instead exit nonzero immediately;
 Typer handles Ctrl-C and EOF. This routing applies to titles only: episode parsing still uses
 Anitopy with a GuessIt fallback, and named releases still use GuessIt's group/service fields.
 

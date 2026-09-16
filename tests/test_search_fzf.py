@@ -75,10 +75,15 @@ def child_main(mode: str, directory: str) -> None:
             print(f"[fixture API] search_entries {query!r} anime={anime}", file=sys.stderr)
             if mode == "manual":
                 return []
-            return [
+            entries = [
                 Entry(42, "Fixture API: 別の作品", "2026-01-01T00:00:00Z", EntryFlags(anime=True)),
                 Entry(99, "Fixture API: 葬送のフリーレン", "2026-01-01T00:00:00Z", EntryFlags(anime=True)),
             ]
+            if mode == "retry":
+                if query == "見つからない作品":
+                    return []
+                return [entries[1] if query == "葬送のフリーレン" else entries[0]]
+            return entries
 
         def get_files(self, entry_id: int, episode: int | None = None) -> list[FileEntry]:
             assert episode is not None
@@ -438,6 +443,64 @@ def test_search_fixture_api_emits_only_complete_command_in_mark_order(
         assert list(child_command.videos.iterdir()) == [child_command.videos / "Show - 01.mkv"]
 
 
+def test_search_ctrl_r_retries_manual_queries_with_and_without_local_matches(
+    child_command: ChildCommand,
+) -> None:
+    # Both parsers have usable, distinct titles; Ctrl-R must skip the alternate.
+    _ = (child_command.videos / "Show - 01.mkv").rename(
+        child_command.videos / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv"
+    )
+    child_command.environment["JIMAKU_SEARCH_ANIME"] = "false"
+    with start_session(child_command, "retry") as session:
+        session.wait_for("1/1")
+        offset = session.send(b"\x12")
+        session.wait_for("Search title:", after=offset)
+        offset = session.send("別の題名\r")
+        session.wait_for("1/1", after=offset)
+
+        # Retrying works even when fzf has no highlighted entry to accept.
+        offset = session.send("__fixture_no_match__")
+        session.wait_for("0/1", after=offset)
+        offset = session.send(b"\x12")
+        session.wait_for("Search title:", after=offset)
+        offset = session.send("見つからない作品\r")
+        session.wait_for("Search title:", after=offset)
+        offset = session.send("葬送のフリーレン\r")
+        session.wait_for("1/1", after=offset)
+        assert session.stdout == b"", session.diagnostic()
+        assert b"[fixture API] get_files" not in session.terminal
+
+        offset = session.send(b"\r")
+        session.wait_for("Subtitle release:", after=offset)
+        session.wait_for("1/1", after=offset)
+        # Ctrl-R remains a normal fzf key in the release picker, not a new search.
+        _ = session.send(b"\x12\r")
+        assert session.finish() == 0, session.diagnostic()
+        assert shlex.split(session.stdout.decode()) == [
+            "jimaku",
+            "download",
+            str(child_command.videos.resolve()),
+            "--id",
+            "99",
+            "--release",
+            "Delta",
+        ]
+        assert session.stdout.count(b"\n") == 1
+        assert re.findall(
+            r"\[fixture API\] search_entries [^\r\n]+",
+            session.terminal.decode(),
+        ) == [
+            f"[fixture API] search_entries {query!r} anime=False"
+            for query in (
+                "Wedding Impossible",
+                "別の題名",
+                "見つからない作品",
+                "葬送のフリーレン",
+            )
+        ]
+        assert b"[fixture API] get_files 99 7" in session.terminal
+
+
 @pytest.mark.parametrize("stage", ["entry", "release", "later-release"])
 @pytest.mark.parametrize("key", [b"\x1b", b"\x03", b"\x04"], ids=["esc", "ctrl-c", "eof"])
 def test_search_fixture_api_cancellation_has_no_partial_command(
@@ -473,10 +536,14 @@ def test_search_fixture_api_cancellation_has_no_partial_command(
 
 
 @pytest.mark.parametrize("key", [b"\x03", b"\x04"], ids=["ctrl-c", "eof"])
+@pytest.mark.parametrize("mode", ["manual", "retry"])
 def test_search_fixture_api_manual_title_cancel_keeps_input_echo_off_stdout(
-    child_command: ChildCommand, key: bytes,
+    child_command: ChildCommand, key: bytes, mode: str,
 ) -> None:
-    with start_session(child_command, "manual") as session:
+    with start_session(child_command, mode) as session:
+        if mode == "retry":
+            session.wait_for("1/1")
+            _ = session.send(b"\x12")
         session.wait_for("Search title:")
         offset = session.send("見つからない作品\r")
         session.wait_for("Search title:", after=offset)
@@ -487,7 +554,7 @@ def test_search_fixture_api_manual_title_cancel_keeps_input_echo_off_stdout(
         assert session.stdout == b"", session.diagnostic()
         assert "見つからない作品".encode() in session.terminal
         assert b"Aborted" in session.terminal
-        assert FZF_STARTED not in session.terminal
+        assert session.terminal.count(FZF_STARTED) == (1 if mode == "retry" else 0)
 
 
 def test_pty_cleanup_reaps_fzf_after_a_test_failure(child_command: ChildCommand) -> None:

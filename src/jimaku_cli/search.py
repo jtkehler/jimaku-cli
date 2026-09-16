@@ -160,14 +160,20 @@ def search(
             log_error(f"could not search entries: {exc}")
             raise typer.Exit(1) from exc
         if entries:
-            break
+            selected = choose(
+                "Entry",
+                [f"{entry.name} (ID {entry.id})" for entry in entries],
+                retry=True,
+            )
+            if selected:
+                [entry_index] = selected
+                break
+            queries.clear()
+            continue
         message = f"no entries found for {query!r}"
         if anime:
             message += ". Use --no-anime to search live action."
         log_error(message)
-    [entry_index] = choose(
-        "Entry", [f"{entry.name} (ID {entry.id})" for entry in entries]
-    )
     entry = entries[entry_index]
 
     releases: list[str] = []
@@ -267,8 +273,17 @@ def release_pattern(filename: str) -> str:
     return "re:^" + pattern + r"\.[^.]+$"
 
 
-def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]:
-    """Choose by hidden index; fzf's UI uses stderr, not the command payload."""
+def choose(
+    message: str,
+    labels: list[str],
+    *,
+    multi: bool = False,
+    retry: bool = False,
+) -> list[int]:
+    """Choose by hidden index; return [] only for an enabled Ctrl-R retry.
+
+    fzf's UI uses stderr, not the command payload.
+    """
     env = {
         name: value
         for name, value in os.environ.items()
@@ -284,6 +299,8 @@ def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]
         if multi
         else "Type to search; Enter to select; Esc to cancel"
     )
+    if retry:
+        header += "; Ctrl-R: new search"
     try:
         # iterfzf's callable waits before reading stdout and can fill the result pipe.
         # run() uses communicate() to drain it while fzf is still running.
@@ -299,6 +316,7 @@ def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]
                 "--with-nth=2..",
                 "--height=40%",
                 "--layout=reverse",
+                *(("--expect=ctrl-r",) if retry else ()),
             ],
             input="".join(
                 f"{index}\t{inline(label)}\n" for index, label in enumerate(labels)
@@ -313,6 +331,12 @@ def choose(message: str, labels: list[str], *, multi: bool = False) -> list[int]
     except OSError as exc:
         log_error(f"could not run fzf: {exc}")
         raise typer.Exit(1) from exc
-    if process.returncode != 0 or not process.stdout:
+    output = process.stdout
+    if retry:
+        key, _, output = output.partition(b"\n")
+        # fzf exits 1 if the local filter has no matches, even with an expected key.
+        if key == b"ctrl-r" and process.returncode in (0, 1):
+            return []
+    if process.returncode != 0 or not output:
         raise typer.Abort()
-    return [int(row.split(b"\t", 1)[0]) for row in process.stdout.splitlines()]
+    return [int(row.split(b"\t", 1)[0]) for row in output.splitlines()]

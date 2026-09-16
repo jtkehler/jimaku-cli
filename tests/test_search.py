@@ -41,10 +41,14 @@ def fzf_input(monkeypatch: pytest.MonkeyPatch) -> None:
         answer = sys.stdin.readline()
         if not answer:
             raise KeyboardInterrupt
+        if "--expect=ctrl-r" in args and answer.strip() == "ctrl-r":
+            return subprocess.CompletedProcess(args, 0, stdout=b"ctrl-r\n")
         indices = [int(value) - 1 for value in answer.split()]
         if "--multi" not in args:
             assert len(indices) == 1, "entry selection must be single-choice"
         selected = "".join(rows[index] + "\n" for index in indices).encode("utf-8")
+        if "--expect=ctrl-r" in args:
+            selected = b"\n" + selected
         return subprocess.CompletedProcess(args, 0, stdout=selected)
 
     monkeypatch.setattr("jimaku_cli.search.subprocess.run", select)
@@ -106,6 +110,8 @@ def test_search_selects_an_entry_with_fzf(
         rows = input.decode("utf-8").splitlines()
         calls.append((rows, args))
         row = rows[1] if len(calls) == 1 else rows[0]
+        if "--expect=ctrl-r" in args:
+            row = "\n" + row
         return subprocess.CompletedProcess(args, 0, stdout=(row + "\n").encode("utf-8"))
 
     monkeypatch.setattr("jimaku_cli.search.subprocess.run", select)
@@ -325,6 +331,31 @@ def test_search_api_errors_stop_instead_of_trying_another_query(
     assert str(error) in result.stderr
     assert ("Search title:" in result.stderr) is (fail_at == 2)
     assert client.searched == [(query, True) for query in queries[:fail_at + 1]]
+    assert client.listed == []
+    assert result.stdout == ""
+
+
+def test_manual_retry_api_failure_emits_no_command_or_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient({})
+
+    def search_entries(query: str, *, anime: bool) -> list[Entry]:
+        client.searched.append((query, anime))
+        if query == "Show":
+            return client.entries
+        raise requests.Timeout("manual search timed out")
+
+    monkeypatch.setattr(client, "search_entries", search_entries)
+    result = CliRunner().invoke(
+        app, [str(tmp_path), "--download"], obj=client,
+        input="ctrl-r\nManual title\nAnother title\n",
+    )
+
+    assert result.exit_code == 1
+    assert "manual search timed out" in result.stderr
+    assert client.searched == [("Show", True), ("Manual title", True)]
     assert client.listed == []
     assert result.stdout == ""
 
