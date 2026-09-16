@@ -17,13 +17,13 @@ from iterfzf import BUNDLED_EXECUTABLE
 from .api import JimakuClient
 from .colorscheme import FZF_COLORS
 from .download import (
-    DEFAULT_ALIGN,
     DEFAULT_DOWNLOAD_ALL,
     DEFAULT_OVERWRITE,
     DEFAULT_PREFER_FORMAT,
     DEFAULT_QUIET,
     DEFAULT_RENAME,
     DEFAULT_STRIP_IH,
+    DEFAULT_SYNC,
     DEFAULT_VERBOSE,
     TRANSFER_ERRORS,
     VIDEO_EXTS,
@@ -85,6 +85,8 @@ def search(
     rename: Annotated[
         bool,
         typer.Option(
+            "--rename/--no-rename",
+            "-r",
             envvar="JIMAKU_SEARCH_RENAME",
             help="Name subtitles after their video files.",
         ),
@@ -96,13 +98,15 @@ def search(
             help="Re-download existing subtitles.",
         ),
     ] = DEFAULT_OVERWRITE,
-    align: Annotated[
+    sync: Annotated[
         bool,
         typer.Option(
-            envvar="JIMAKU_SEARCH_ALIGN",
+            "--sync/--no-sync",
+            "-s",
+            envvar="JIMAKU_SEARCH_SYNC",
             help="Align subtitles to the video's audio.",
         ),
-    ] = DEFAULT_ALIGN,
+    ] = DEFAULT_SYNC,
     strip_ih: Annotated[
         bool,
         typer.Option(
@@ -209,7 +213,7 @@ def search(
         ("all", download_all, DEFAULT_DOWNLOAD_ALL),
         ("rename", rename, DEFAULT_RENAME),
         ("overwrite", overwrite, DEFAULT_OVERWRITE),
-        ("align", align, DEFAULT_ALIGN),
+        ("sync", sync, DEFAULT_SYNC),
         ("strip-ih", strip_ih, DEFAULT_STRIP_IH),
     ):
         if enabled != default:
@@ -226,7 +230,7 @@ def search(
             download_all=download_all,
             rename=rename,
             overwrite=overwrite,
-            align=align,
+            sync=sync,
             strip_ih=strip_ih,
             quiet=DEFAULT_QUIET,
             verbose=DEFAULT_VERBOSE,

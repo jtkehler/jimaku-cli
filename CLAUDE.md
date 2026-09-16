@@ -14,6 +14,8 @@ interactively must be expressible as flags; search preferences may come from per
 
 ## Commands
 
+The root command and both subcommands accept `--help` / `-h`.
+
 ### `jimaku download [DIRECTORY]`
 
 The core command. Walks the video files in a directory (default `.`), determines each one's
@@ -27,9 +29,9 @@ left alone. Non-interactive and safe to re-run.
 | `--release PATTERN` | Repeatable; order is significant. Matched against the release group or streaming service in the remote filename, case-insensitively. Prefix with `re:` for a regex. Omit to accept anything. |
 | `--prefer-format FORMAT` | Prefer `srt` by default within each release priority. Accepts `srt`, `ass`, `ssa`, `vtt`, and `sub`, case-insensitively. Other supported formats remain eligible; no conversion. |
 | `--all` / `--no-all` | Download every matching release, each to its own file. Off by default: only the best match is written. Later explicit boolean settings win. |
-| `--rename` | Name the subtitle after its video file. Off by default, which keeps the remote filename apart from lowercasing its extension. |
+| `--rename` / `-r` | Name the subtitle after its video file. Off by default, which keeps the remote filename apart from lowercasing its extension. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
-| `--align` | Time-align the subtitle against the video's audio, with ffsubsync. |
+| `--sync` / `-s` | Time-align the subtitle against the video's audio, with ffsubsync. |
 | `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as halfwidth-parenthesised kana after kanji or as HTML `<ruby>`.
 Halfwidth is the whole of the parenthesised rule: the fullwidth pair is prescribed for speaker IDs,
 sound effects and whispered dialogue, and ruby is set as positioned text rather than parenthesised,
@@ -97,8 +99,8 @@ Typer handles Ctrl-C and EOF. This routing applies to titles only: episode parsi
 Anitopy with a GuessIt fallback, and named releases still use GuessIt's group/service fields.
 
 **`search` takes no `--release`; it produces one.** It does take the options that describe what to
-do with files once filtered — `--prefer-format`, `--all`, `--rename`, `--overwrite`, `--align`,
-`--strip-ih` — including their negative boolean forms. Only nondefault resolved preferences
+do with files once filtered — `--prefer-format`, `--all`, `--rename` / `-r`, `--overwrite`,
+`--sync` / `-s`, `--strip-ih` — including their negative boolean forms. Only nondefault resolved preferences
 are recorded in the command: compare against the shared `DEFAULT_*` constants in `download.py`,
 emitting a positive or negative flag only when a boolean differs from its default. Currently this
 omits `srt` and false handling settings. Immediate execution still passes every resolved setting directly
@@ -138,7 +140,7 @@ there is no `config` command.
 
 Each search option declares its own native `typer.Option(envvar=...)`: `JIMAKU_SEARCH_DOWNLOAD`,
 `JIMAKU_SEARCH_ANIME`, `JIMAKU_SEARCH_PREFER_FORMAT`, `JIMAKU_SEARCH_ALL`,
-`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_ALIGN`, and
+`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_SYNC`, and
 `JIMAKU_SEARCH_STRIP_IH`. Typer reads values on each invocation. Explicit command-line options
 take precedence over environment values, which take precedence over built-in defaults. Unset
 or empty variables use defaults. Native boolean and format conversion applies; values are not
@@ -385,7 +387,7 @@ uses `log_error` for recoverable parse/search misses; printing that diagnostic a
 left intact. Default and verbose output separate modified and removed cue counts.
 Alignment prints
 `ffsubsync: aligning…` before running and `complete` only after atomic installation.
-Default terminal runs with `--align` use ffsubsync's own progress bar. Quiet, verbose,
+Default terminal runs with `--sync` use ffsubsync's own progress bar. Quiet, verbose,
 redirected output, and `TERM=dumb` use only start/result lines. No custom progress
 callbacks or milestones.
 
@@ -406,7 +408,7 @@ loads lazily under a small guard against its `basicConfig` side effect.
 `search` implements the wizard above, including genre-first title retries, manual search input,
 release selection, and opt-in download execution.
 
-`--align` runs ffsubsync over the subtitle that just downloaded, replacing it in place. The CLI
+`--sync` runs ffsubsync over the subtitle that just downloaded, replacing it in place. The CLI
 uses the native progress bar in terminals and suppresses it for cron/diagnostic output by
 temporarily replacing only `ffsubsync.speech_transformers.tqdm`. This private adapter is coupled
 to ffsubsync 0.5.1 and must be revisited on upgrades; its binding is restored even on failure.

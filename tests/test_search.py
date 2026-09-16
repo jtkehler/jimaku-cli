@@ -166,7 +166,7 @@ def test_multi_selection_deduplicates_releases_and_replays_download(
     search = runner.invoke(
         cli.app,
         ["search", str(tmp_path), "--all" if download_all else "--no-all",
-         "--no-rename", "--no-overwrite", "--no-align", "--no-strip-ih"],
+         "--no-rename", "--no-overwrite", "--no-sync", "--no-strip-ih"],
         input="1\n2 3 1\n",
     )
 
@@ -516,7 +516,7 @@ def test_search_passes_handling_options_to_the_emitted_command(tmp_path, enabled
         subtitle("[AssGroup] Show - 01.ass"),
     ]})
     client.entries.append(Entry(99, "Other Show", "2026-01-01T00:00:00Z"))
-    switches = ["all", "rename", "overwrite", "align", "strip-ih"]
+    switches = ["all", "rename", "overwrite", "sync", "strip-ih"]
     flags = [f"--{'' if enabled else 'no-'}{name}" for name in switches]
 
     result = CliRunner().invoke(
@@ -786,7 +786,7 @@ def test_search_resolves_environment_preferences_on_each_invocation(
         "JIMAKU_SEARCH_ALL": "true",
         "JIMAKU_SEARCH_RENAME": "true",
         "JIMAKU_SEARCH_OVERWRITE": "true",
-        "JIMAKU_SEARCH_ALIGN": "true",
+        "JIMAKU_SEARCH_SYNC": "true",
         "JIMAKU_SEARCH_STRIP_IH": "true",
         "JIMAKU_SEARCH_ANIME": "false",
         "JIMAKU_SEARCH_DOWNLOAD": "true",
@@ -794,7 +794,7 @@ def test_search_resolves_environment_preferences_on_each_invocation(
     for name, value in preferences.items():
         monkeypatch.setenv(name, value)
     runner = CliRunner()
-    switches = ["all", "rename", "overwrite", "align", "strip-ih"]
+    switches = ["all", "rename", "overwrite", "sync", "strip-ih"]
     base = ["jimaku", "download", str(tmp_path.resolve()), "--id", "42"]
 
     inherited = runner.invoke(
@@ -850,12 +850,12 @@ def test_search_environment_and_cli_use_native_last_occurrence_precedence(
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
-    monkeypatch.setenv("JIMAKU_SEARCH_ALIGN", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_SYNC", "true")
     monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "ASS")
 
     result = CliRunner().invoke(
         cli.app,
-        ["search", str(tmp_path), "--align", "--no-align",
+        ["search", str(tmp_path), "--sync", "--no-sync",
          "--prefer-format", "ass", "--prefer-format", "srt"],
         input="1\n1\n", catch_exceptions=False,
     )
@@ -872,7 +872,7 @@ def test_search_environment_and_cli_use_native_last_occurrence_precedence(
     "envvar, value, diagnostic",
     [
         ("JIMAKU_SEARCH_PREFER_FORMAT", "zip", "--prefer-format"),
-        ("JIMAKU_SEARCH_ALIGN", "maybe", "--align"),
+        ("JIMAKU_SEARCH_SYNC", "maybe", "--sync"),
     ],
 )
 def test_invalid_search_environment_is_rejected_before_work(
@@ -1026,7 +1026,7 @@ def test_unparsed_release_command_replay_preserves_codec(tmp_path, monkeypatch):
     search = runner.invoke(
         cli.app,
         ["search", str(tmp_path), "--no-all", "--no-rename", "--no-overwrite",
-         "--no-align", "--no-strip-ih", "--prefer-format", "srt"],
+         "--no-sync", "--no-strip-ih", "--prefer-format", "srt"],
         input="1\n1\n", catch_exceptions=False,
     )
 
@@ -1060,7 +1060,7 @@ def test_versioned_release_command_replay_preserves_dotted_codec(tmp_path, monke
     search = runner.invoke(
         cli.app,
         ["search", str(tmp_path), "--no-all", "--no-rename", "--no-overwrite",
-         "--no-align", "--no-strip-ih", "--prefer-format", "srt"],
+         "--no-sync", "--no-strip-ih", "--prefer-format", "srt"],
         input="1\n2\n", catch_exceptions=False,
     )
 

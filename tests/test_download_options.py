@@ -34,7 +34,7 @@ def invoke(directory, client, *flags):
         app,
         [
             "--id", "1", str(directory), "--release", "re:.",
-            "--no-overwrite", "--no-strip-ih", "--no-align", *flags,
+            "--no-overwrite", "--no-strip-ih", "--no-sync", *flags,
         ],
         obj=client,
         catch_exceptions=False,

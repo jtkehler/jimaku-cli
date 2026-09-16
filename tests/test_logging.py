@@ -89,7 +89,7 @@ def run(
     *args: str,
     release: str = "re:.",
     strip_ih: bool = False,
-    align: bool = False,
+    sync: bool = False,
 ):
     """Invoke `download` against a stub with explicit release and handling options."""
     return runner.invoke(
@@ -103,7 +103,7 @@ def run(
             "--no-rename",
             "--no-overwrite",
             "--strip-ih" if strip_ih else "--no-strip-ih",
-            "--align" if align else "--no-align",
+            "--sync" if sync else "--no-sync",
             *args,
         ],
         obj=client,
@@ -254,7 +254,7 @@ def test_an_align_failure_is_tagged_failed(library, monkeypatch):
         postprocess, "sync_subtitle", _raising(RuntimeError("ffmpeg missing"))
     )
 
-    result = run(directory, StubClient({1: [remote(1)]}), align=True)
+    result = run(directory, StubClient({1: [remote(1)]}), sync=True)
 
     assert "[failed]" in result.stderr
     assert "ffmpeg missing" in result.stderr
@@ -271,7 +271,7 @@ def test_a_failed_strip_still_gets_aligned(library, monkeypatch):
 
     monkeypatch.setattr(postprocess, "sync_subtitle", align)
 
-    run(directory, StubClient({1: [remote(1)]}), strip_ih=True, align=True)
+    run(directory, StubClient({1: [remote(1)]}), strip_ih=True, sync=True)
 
     assert aligned == [directory / subtitle_name(1)]
 
@@ -319,7 +319,7 @@ def test_root_download_ignores_search_preferences(
     monkeypatch.setenv("JIMAKU_SEARCH_ALL", "true")
     monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
     monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "ass")
-    monkeypatch.setenv("JIMAKU_SEARCH_ALIGN", "true")
+    monkeypatch.setenv("JIMAKU_SEARCH_SYNC", "true")
     args = ["download", str(directory), "--id", "1"]
     video = directory / video_name(1)
     srt = directory / "[A] Show - 01.srt"
@@ -335,7 +335,7 @@ def test_root_download_ignores_search_preferences(
     assert "ffsubsync" not in default.stderr
 
     monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "zip")
-    monkeypatch.setenv("JIMAKU_SEARCH_ALIGN", "invalid")
+    monkeypatch.setenv("JIMAKU_SEARCH_SYNC", "invalid")
     repeated = runner.invoke(cli.app, args, catch_exceptions=False)
 
     assert repeated.exit_code == 0, repeated.stderr
@@ -523,7 +523,7 @@ def alignment_backend(monkeypatch):
 def test_alignment_reports_progress_and_completion(library, alignment_backend, flags):
     alignment_backend()
     directory = library(1)
-    result = run(directory, StubClient({1: [remote(1)]}), *flags, align=True)
+    result = run(directory, StubClient({1: [remote(1)]}), *flags, sync=True)
     assert result.exit_code == 0
     assert result.stdout == ""
     assert "ffsubsync: aligning" in result.stderr
@@ -546,7 +546,7 @@ def test_failed_alignment_never_reports_completion(
             postprocess.os, "replace", _raising(OSError("install failed"))
         )
     directory = library(1)
-    result = run(directory, StubClient({1: [remote(1)]}), align=True)
+    result = run(directory, StubClient({1: [remote(1)]}), sync=True)
     assert "ffsubsync: aligning" in result.stderr
     assert "ffsubsync: complete" not in result.stderr
     assert "[failed]" in result.stderr
@@ -564,7 +564,7 @@ def test_two_processing_failures_count_as_two_operations(library, monkeypatch, f
         postprocess, "sync_subtitle", _raising(RuntimeError("align failed"))
     )
     result = run(
-        directory, StubClient({1: [remote(1)]}), *flags, strip_ih=True, align=True
+        directory, StubClient({1: [remote(1)]}), *flags, strip_ih=True, sync=True
     )
     assert result.exit_code == 1
     assert result.stdout == ""

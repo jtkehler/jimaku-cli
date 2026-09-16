@@ -11,7 +11,7 @@ uv tool install git+https://github.com/jtkehler/jimaku-cli
 ```
 
 The interactive picker bundles fzf on supported platforms, with a system `fzf`
-fallback. [FFmpeg](https://ffmpeg.org/download.html) is required only for `--align`.
+fallback. [FFmpeg](https://ffmpeg.org/download.html) is required only for `--sync`.
 
 ## Setup
 
@@ -22,8 +22,8 @@ its own environment variable; configuration files are not read.
 ```bash
 export JIMAKU_API_KEY='your-api-key'
 export JIMAKU_SEARCH_RENAME=true
-export JIMAKU_SEARCH_ALIGN=true
-jimaku search . --no-align
+export JIMAKU_SEARCH_SYNC=true
+jimaku search . --no-sync
 ```
 
 Bash preferences can go in `~/.bashrc`. In fish:
@@ -31,8 +31,8 @@ Bash preferences can go in `~/.bashrc`. In fish:
 ```fish
 set -gx JIMAKU_API_KEY 'your-api-key'
 set -Ux JIMAKU_SEARCH_RENAME true
-set -Ux JIMAKU_SEARCH_ALIGN true
-jimaku search . --no-align
+set -Ux JIMAKU_SEARCH_SYNC true
+jimaku search . --no-sync
 ```
 
 Fish's `-Ux` stores an exported universal preference. The API-key examples export
@@ -48,9 +48,9 @@ options take precedence; unset or empty variables use the built-in defaults.
 | `--anime` / `--no-anime` | `JIMAKU_SEARCH_ANIME` |
 | `--prefer-format` | `JIMAKU_SEARCH_PREFER_FORMAT` |
 | `--all` / `--no-all` | `JIMAKU_SEARCH_ALL` |
-| `--rename` / `--no-rename` | `JIMAKU_SEARCH_RENAME` |
+| `--rename` / `-r` / `--no-rename` | `JIMAKU_SEARCH_RENAME` |
 | `--overwrite` / `--no-overwrite` | `JIMAKU_SEARCH_OVERWRITE` |
-| `--align` / `--no-align` | `JIMAKU_SEARCH_ALIGN` |
+| `--sync` / `-s` / `--no-sync` | `JIMAKU_SEARCH_SYNC` |
 | `--strip-ih` / `--no-strip-ih` | `JIMAKU_SEARCH_STRIP_IH` |
 
 Boolean values accept `true`, `1`, `yes`, or `on`, and `false`, `0`, `no`, or
@@ -62,11 +62,11 @@ on the command line, and the wizard still constructs release priorities.
 To ignore the two example preferences for one invocation:
 
 ```sh
-env -u JIMAKU_SEARCH_RENAME -u JIMAKU_SEARCH_ALIGN jimaku search .
+env -u JIMAKU_SEARCH_RENAME -u JIMAKU_SEARCH_SYNC jimaku search .
 ```
 
 In the examples above, the generated download command includes `--rename` but
-neither `--align` nor `--no-align`: the final align value equals download's false
+neither `--sync` nor `--no-sync`: the final sync value equals download's false
 default. A final `srt` format preference is likewise omitted. Only preferences
 that differ from download's defaults are emitted. Download uses only its built-in
 defaults and explicit arguments, never search preferences.
@@ -99,13 +99,13 @@ Existing output files are skipped unless `--overwrite` is set.
 
 Options shared by `search` and `download`:
 
-- `--rename` / `--no-rename`: name subtitles after the video, adding the release and `.ja` tag.
+- `--rename` / `-r` / `--no-rename`: name subtitles after the video, adding the release and `.ja` tag.
 - `--prefer-format`: prefer `srt` (default), `ass`, `ssa`, `vtt`, or `sub` within
   each release. Other formats remain eligible; files are not converted.
 - `--all` / `--no-all`: download every match instead of the best one per episode.
 - `--overwrite` / `--no-overwrite`: re-download existing targets.
 - `--strip-ih` / `--no-strip-ih`: remove annotations and some ruby readings from SRT/ASS/SSA.
-- `--align` / `--no-align`: synchronize timing to the video's audio with ffsubsync.
+- `--sync` / `-s` / `--no-sync`: synchronize timing to the video's audio with ffsubsync.
 
 All shared booleans default to false. Search alone accepts `--anime` / `--no-anime`
 (anime by default) and `--download` / `--no-download` (print-only by default).
@@ -115,6 +115,7 @@ Processing modifies downloaded subtitles in place. Stripping runs before alignme
 and **can remove real dialogue**; it is off by default. See
 [known issues](docs/known-issues.md) for filename-matching and output-collision
 limitations. Use `jimaku search --help` or `jimaku download --help` for all options.
+`-h` is available alongside `--help` on the root command and both subcommands.
 
 ## Scripts and cron
 

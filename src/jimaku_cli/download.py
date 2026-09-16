@@ -28,7 +28,7 @@ DEFAULT_PREFER_FORMAT = "srt"
 DEFAULT_DOWNLOAD_ALL = False
 DEFAULT_RENAME = False
 DEFAULT_OVERWRITE = False
-DEFAULT_ALIGN = False
+DEFAULT_SYNC = False
 DEFAULT_STRIP_IH = False
 DEFAULT_QUIET = False
 DEFAULT_VERBOSE = False
@@ -67,6 +67,8 @@ def download(
     rename: Annotated[
         bool,
         typer.Option(
+            "--rename/--no-rename",
+            "-r",
             help="Rename downloaded subtitles to match their video files.",
         ),
     ] = DEFAULT_RENAME,
@@ -76,12 +78,14 @@ def download(
             help="Re-download episodes that already have subtitles.",
         ),
     ] = DEFAULT_OVERWRITE,
-    align: Annotated[
+    sync: Annotated[
         bool,
         typer.Option(
+            "--sync/--no-sync",
+            "-s",
             help="Align subtitles to the video's audio with ffsubsync.",
         ),
-    ] = DEFAULT_ALIGN,
+    ] = DEFAULT_SYNC,
     strip_ih: Annotated[
         bool,
         typer.Option(
@@ -218,7 +222,7 @@ def download(
 
             # Its own try, so a failed strip still gets aligned and a failed
             # align still leaves the stripped subtitle in place.
-            if align:
+            if sync:
                 reporter.step(output_path.name, "ffsubsync", "aligning…")
                 try:
                     aligned = postprocess.sync_subtitle(

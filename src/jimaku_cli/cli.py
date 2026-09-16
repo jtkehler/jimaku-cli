@@ -9,7 +9,10 @@ from .output import log_error
 from .search import app as search_app
 
 configure_typer()
-app = typer.Typer(no_args_is_help=True)
+app = typer.Typer(
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["--help", "-h"]},
+)
 
 
 @app.callback()
