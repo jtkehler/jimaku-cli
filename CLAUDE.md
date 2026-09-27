@@ -32,6 +32,7 @@ left alone. Non-interactive and safe to re-run.
 | `--rename` / `-r` | Name the subtitle after its video file. Off by default, which keeps the remote filename apart from lowercasing its extension. |
 | `--overwrite` | Re-download episodes that already have subtitles. |
 | `--sync` / `-s` | Time-align the subtitle against the video's audio, with ffsubsync. |
+| `--ffsubsync-args ARGS` | One quoted string of extra ffsubsync options, split with `shlex.split()` (never run by a shell) and appended after Jimaku's own video, input and output operands. Ignored without `--sync`. Not validated: the user is responsible for what it contains. |
 | `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as halfwidth-parenthesised kana after kanji or as HTML `<ruby>`.
 Halfwidth is the whole of the parenthesised rule: the fullwidth pair is prescribed for speaker IDs,
 sound effects and whispered dialogue, and ruby is set as positioned text rather than parenthesised,
@@ -106,10 +107,12 @@ Anitopy with a GuessIt fallback, and named releases still use GuessIt's group/se
 
 **`search` takes no `--release`; it produces one.** It does take the options that describe what to
 do with files once filtered — `--prefer-format`, `--all`, `--rename` / `-r`, `--overwrite`,
-`--sync` / `-s`, `--strip-ih` — including their negative boolean forms. Only nondefault resolved preferences
+`--sync` / `-s`, `--ffsubsync-args`, `--strip-ih` — including their negative boolean forms. Only nondefault resolved preferences
 are recorded in the command: compare against the shared `DEFAULT_*` constants in `download.py`,
 emitting a positive or negative flag only when a boolean differs from its default. Currently this
-omits `srt` and false handling settings. Immediate execution still passes every resolved setting directly
+omits `srt` and false handling settings; a nonblank `--ffsubsync-args` string is emitted as given
+when sync is on, and omitted otherwise.
+Immediate execution still passes every resolved setting directly
 to `download`, including false values. Selecting a file chooses its release, not an exact file or
 extension; `--prefer-format` controls ranking within that release.
 
@@ -146,11 +149,13 @@ there is no `config` command.
 
 Each search option declares its own native `typer.Option(envvar=...)`: `JIMAKU_SEARCH_DOWNLOAD`,
 `JIMAKU_SEARCH_ANIME`, `JIMAKU_SEARCH_PREFER_FORMAT`, `JIMAKU_SEARCH_ALL`,
-`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_SYNC`, and
+`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_SYNC`, `JIMAKU_SEARCH_FFSUBSYNC_ARGS`, and
 `JIMAKU_SEARCH_STRIP_IH`. Typer reads values on each invocation. Explicit command-line options
 take precedence over environment values, which take precedence over built-in defaults. Unset
-or empty variables use defaults. Native boolean and format conversion applies; values are not
-shell option strings and are never tokenized. The directory remains a positional argument,
+or empty variables use defaults. Native boolean and format conversion applies. The ffsubsync
+option string is forwarded unchanged, included in the generated command, and split only at
+the ffsubsync call; an explicit `--ffsubsync-args ''` clears its environment preference.
+The directory remains a positional argument,
 and search constructs releases rather than accepting release preferences.
 
 Keep all parsing, validation, help, and completion native to Typer. There is no command subclass,

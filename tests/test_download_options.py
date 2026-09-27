@@ -76,3 +76,14 @@ def test_normalized_output_is_used_for_skip_existing(tmp_path):
     assert existing.read_bytes() == b"existing"
     assert "[skip]" in result.stderr
     assert not (tmp_path / client.file.name).exists()
+
+
+def test_ffsubsync_args_are_ignored_without_sync(tmp_path):
+    (tmp_path / "[Group] Show - 01.mkv").touch()
+    client = DownloadClient("[Group] Show - 01.srt")
+
+    result = invoke(tmp_path, client, "--ffsubsync-args", "--no-fix-framerate")
+
+    assert result.exit_code == 0, result.stderr
+    assert client.downloaded == [tmp_path / "[Group] Show - 01.srt"]
+    assert "ffsubsync" not in result.stderr

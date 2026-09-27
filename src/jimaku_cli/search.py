@@ -18,6 +18,7 @@ from .api import JimakuClient
 from .colorscheme import FZF_COLORS
 from .download import (
     DEFAULT_DOWNLOAD_ALL,
+    DEFAULT_FFSUBSYNC_ARGS,
     DEFAULT_OVERWRITE,
     DEFAULT_PREFER_FORMAT,
     DEFAULT_QUIET,
@@ -107,6 +108,13 @@ def search(
             help="Align subtitles to the video's audio.",
         ),
     ] = DEFAULT_SYNC,
+    ffsubsync_args: Annotated[
+        str,
+        typer.Option(
+            envvar="JIMAKU_SEARCH_FFSUBSYNC_ARGS",
+            help="Extra ffsubsync options as one quoted string; used only with --sync.",
+        ),
+    ] = DEFAULT_FFSUBSYNC_ARGS,
     strip_ih: Annotated[
         bool,
         typer.Option(
@@ -224,6 +232,8 @@ def search(
     ):
         if enabled != default:
             command.append(f"--{'' if enabled else 'no-'}{name}")
+    if sync and ffsubsync_args.strip():
+        command.extend(["--ffsubsync-args", ffsubsync_args])
     # Preserve shell argument data; echo strips ANSI sequences on redirected stdout.
     sys.stdout.write(shlex.join(command) + "\n")
     if run_download:
@@ -237,6 +247,7 @@ def search(
             rename=rename,
             overwrite=overwrite,
             sync=sync,
+            ffsubsync_args=ffsubsync_args,
             strip_ih=strip_ih,
             quiet=DEFAULT_QUIET,
             verbose=DEFAULT_VERBOSE,

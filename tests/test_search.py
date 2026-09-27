@@ -1,18 +1,21 @@
 """The setup wizard emits a reproducible command, not subtitle downloads."""
 
+import argparse
 import os
 import re
 import shlex
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
 import typer
 from typer.testing import CliRunner
 
-from jimaku_cli import cli
+from jimaku_cli import cli, postprocess
 from jimaku_cli.api import Entry, EntryFlags, FileEntry, JimakuError
 from jimaku_cli.download import match
 from jimaku_cli.search import app, choose, release_pattern
@@ -1185,3 +1188,84 @@ def test_search_propagates_download_failure(
     assert "[failed]" in result.stderr
     assert "fixture transfer failed" in result.stderr
     assert list(tmp_path.iterdir()) == [video]
+
+
+@pytest.mark.parametrize("argument_source", ["cli", "env", "override"])
+def test_search_command_and_direct_download_forward_the_same_ffsubsync_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argument_source: str
+) -> None:
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
+    monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
+    monkeypatch.setattr(client, "download_file", lambda url, dest: dest.write_bytes(b"subtitle"))
+    # ffsubsync's real parser reads the forwarded argv; only alignment is a fixture.
+    _, make_parser = postprocess._load_ffsubsync()
+    aligned: list[argparse.Namespace] = []
+
+    def align(args: argparse.Namespace) -> dict[str, bool]:
+        aligned.append(args)
+        _ = Path(args.srtout).write_text("synced")
+        return {"sync_was_successful": True}
+
+    monkeypatch.setattr(
+        postprocess, "_load_ffsubsync", lambda: (SimpleNamespace(run=align), make_parser)
+    )
+    monkeypatch.setattr(postprocess, "_silence_native_progress", nullcontext)
+    value = "--reference-stream 0:s:1 --no-fix-framerate --ffmpeg-path '/opt/my ffmpeg'"
+    if argument_source != "cli":
+        monkeypatch.setenv(
+            "JIMAKU_SEARCH_FFSUBSYNC_ARGS",
+            value if argument_source == "env" else "--reference-stream 0:s:9",
+        )
+    flags = [] if argument_source == "env" else ["--ffsubsync-args", value]
+    runner = CliRunner()
+
+    search = runner.invoke(
+        cli.app,
+        ["search", str(tmp_path), "--download", "--overwrite", "--sync", *flags],
+        input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert search.exit_code == 0, search.stderr
+    assert search.stdout.count("\n") == 1
+    command = shlex.split(search.stdout)
+    assert "--sync" in command
+    assert command[command.index("--ffsubsync-args") + 1] == value
+    monkeypatch.setenv("JIMAKU_SEARCH_FFSUBSYNC_ARGS", "--invalid-option")
+    replay = runner.invoke(cli.app, command[1:], catch_exceptions=False)
+
+    assert replay.exit_code == 0, replay.stderr
+    assert [
+        (args.reference, args.reference_stream, args.no_fix_framerate, args.ffmpeg_path)
+        for args in aligned
+    ] == [(str(tmp_path.resolve() / "Show - 01.mkv"), "0:s:1", True, "/opt/my ffmpeg")] * 2
+    assert (tmp_path / "[Group] Show - 01.srt").read_text() == "synced"
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ([], []),
+        (["--ffsubsync-args", "--no-fix-framerate"], []),
+        (["--sync", "--ffsubsync-args", ""], ["--sync"]),
+        (["--sync", "--ffsubsync-args", " \t "], ["--sync"]),
+    ],
+)
+def test_ffsubsync_args_are_omitted_when_blank_or_not_syncing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: list[str]
+) -> None:
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    monkeypatch.setenv("JIMAKU_SEARCH_FFSUBSYNC_ARGS", "--no-fix-framerate")
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path), *flags],
+        obj=client, input="1\n1\n", catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert shlex.split(result.stdout) == [
+        "jimaku", "download", str(tmp_path.resolve()), "--id", "42", "--release", "Group",
+        *expected,
+    ]

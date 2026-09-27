@@ -51,13 +51,16 @@ options take precedence; unset or empty variables use the built-in defaults.
 | `--rename` / `-r` / `--no-rename` | `JIMAKU_SEARCH_RENAME` |
 | `--overwrite` / `--no-overwrite` | `JIMAKU_SEARCH_OVERWRITE` |
 | `--sync` / `-s` / `--no-sync` | `JIMAKU_SEARCH_SYNC` |
+| `--ffsubsync-args` | `JIMAKU_SEARCH_FFSUBSYNC_ARGS` |
 | `--strip-ih` / `--no-strip-ih` | `JIMAKU_SEARCH_STRIP_IH` |
 
 Boolean values accept `true`, `1`, `yes`, or `on`, and `false`, `0`, `no`, or
 `off`, case-insensitively. Format values are `srt`, `ass`, `ssa`, `vtt`, or `sub`,
-also case-insensitively. Values are not shell option strings: for example, set
-`JIMAKU_SEARCH_PREFER_FORMAT=ass`, not `--prefer-format ass`. The directory stays
-on the command line, and the wizard still constructs release priorities.
+also case-insensitively. Set `JIMAKU_SEARCH_PREFER_FORMAT=ass`, not `--prefer-format ass`.
+`JIMAKU_SEARCH_FFSUBSYNC_ARGS` takes an option string such as `--reference-stream 0:s:1`
+and applies only when sync is on, through `JIMAKU_SEARCH_SYNC=true` or `--sync`. Pass
+`--ffsubsync-args ''` to clear it for one invocation. The directory stays on the command line,
+and the wizard still constructs release priorities.
 
 To ignore the two example preferences for one invocation:
 
@@ -107,6 +110,13 @@ Options shared by `search` and `download`:
 - `--overwrite` / `--no-overwrite`: re-download existing targets.
 - `--strip-ih` / `--no-strip-ih`: remove annotations and some ruby readings from SRT/ASS/SSA.
 - `--sync` / `-s` / `--no-sync`: synchronize timing to the video's audio with ffsubsync.
+- `--ffsubsync-args`: extra ffsubsync options as one quoted string, split like a shell
+  command line but never run by a shell; ignored without `--sync`. For example,
+  `--sync --ffsubsync-args '--reference-stream 0:s:1 --no-fix-framerate'` syncs against
+  the video's second subtitle stream without framerate correction. Jimaku supplies the
+  video, input, and output itself and does not check the options you add. With sync on,
+  search copies the string into its generated command, including values from
+  `JIMAKU_SEARCH_FFSUBSYNC_ARGS`.
 
 All shared booleans default to false. Search alone accepts `--anime` / `--no-anime`
 (anime by default) and `--download` / `--no-download` (print-only by default).

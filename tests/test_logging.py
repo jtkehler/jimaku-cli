@@ -265,7 +265,7 @@ def test_a_failed_strip_still_gets_aligned(library, monkeypatch):
     aligned: list[Path] = []
     monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("bad encoding")))
 
-    def align(subtitle, video, *, show_progress):
+    def align(subtitle, video, *, show_progress, ffsubsync_args):
         aligned.append(subtitle)
         return postprocess.AlignmentResult()
 

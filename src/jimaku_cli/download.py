@@ -29,6 +29,7 @@ DEFAULT_DOWNLOAD_ALL = False
 DEFAULT_RENAME = False
 DEFAULT_OVERWRITE = False
 DEFAULT_SYNC = False
+DEFAULT_FFSUBSYNC_ARGS = ""
 DEFAULT_STRIP_IH = False
 DEFAULT_QUIET = False
 DEFAULT_VERBOSE = False
@@ -86,6 +87,15 @@ def download(
             help="Align subtitles to the video's audio with ffsubsync.",
         ),
     ] = DEFAULT_SYNC,
+    ffsubsync_args: Annotated[
+        str,
+        typer.Option(
+            help=(
+                "Extra ffsubsync options as one quoted string, such as "
+                "'--reference-stream 0:s:1'. Used only with --sync."
+            ),
+        ),
+    ] = DEFAULT_FFSUBSYNC_ARGS,
     strip_ih: Annotated[
         bool,
         typer.Option(
@@ -226,7 +236,10 @@ def download(
                 reporter.step(output_path.name, "ffsubsync", "aligning…")
                 try:
                     aligned = postprocess.sync_subtitle(
-                        output_path, video, show_progress=reporter.interactive
+                        output_path,
+                        video,
+                        show_progress=reporter.interactive,
+                        ffsubsync_args=ffsubsync_args,
                     )
                 # ffsubsync reaches ffmpeg, the filesystem and a stack of parsers, so
                 # its failure modes are not worth enumerating: report and move on

@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+import shlex
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
@@ -70,16 +71,19 @@ def sync_subtitle(
     video: Path,
     *,
     show_progress: bool = True,
+    ffsubsync_args: str = "",
 ) -> AlignmentResult:
     """Align subtitle timing to video with ffsubsync.
 
-    Replaces original subtitle on successful align.
+    Replaces original subtitle on successful align. `ffsubsync_args` is a quoted
+    string of extra ffsubsync options, split like a shell but never run by one.
     """
     synced = temporary_path(subtitle, ".ffsubsync")
     try:
         backend, make_parser = _load_ffsubsync()
         args = make_parser().parse_args(
             [str(video), "-i", str(subtitle), "-o", str(synced)]
+            + shlex.split(ffsubsync_args)
         )
         with nullcontext() if show_progress else _silence_native_progress():
             result = backend.run(args)

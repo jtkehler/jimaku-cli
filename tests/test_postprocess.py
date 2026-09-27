@@ -739,6 +739,58 @@ def test_sync_subtitle_cleans_up_when_argument_parsing_fails(
 
 
 @pytest.mark.parametrize(
+    ("ffsubsync_args", "expected"),
+    [
+        ("", []),
+        (" \t ", []),
+        (
+            (
+                "--reference-stream 0:s:2 --reference-stream 0:s:1 --no-fix-framerate "
+                "--apply-offset-seconds -1.5 --ffmpeg-path '/opt/my ffmpeg/bin'"
+            ),
+            [
+                "--reference-stream", "0:s:2", "--reference-stream", "0:s:1",
+                "--no-fix-framerate", "--apply-offset-seconds", "-1.5",
+                "--ffmpeg-path", "/opt/my ffmpeg/bin",
+            ],
+        ),
+    ],
+)
+def test_sync_subtitle_appends_split_ffsubsync_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ffsubsync_args: str,
+    expected: list[str],
+) -> None:
+    subtitle = tmp_path / "dialogue.srt"
+    subtitle.write_text("original")
+    video = tmp_path / "video.mkv"
+    video.touch()
+    parsed: list[list[str]] = []
+
+    class RecordingParser:
+        def parse_args(self, arguments: list[str]) -> Path:
+            parsed.append(arguments)
+            return Path(arguments[arguments.index("-o") + 1])
+
+    def run(output: Path) -> dict[str, bool]:
+        output.write_text("synced")
+        return {"sync_was_successful": True}
+
+    monkeypatch.setattr(
+        "jimaku_cli.postprocess._load_ffsubsync",
+        lambda: (SimpleNamespace(run=run), RecordingParser),
+    )
+
+    sync_subtitle(subtitle, video, ffsubsync_args=ffsubsync_args)
+
+    [arguments] = parsed
+    assert arguments[:4] == [str(video), "-i", str(subtitle), "-o"]
+    assert arguments[5:] == expected
+    assert subtitle.read_text() == "synced"
+
+
+@pytest.mark.parametrize(
     "offset, scale, expected",
     [
         (0.25, 1.001, (0.25, 1.001)),
