@@ -12,6 +12,7 @@ import typer
 
 if TYPE_CHECKING:
     from .postprocess import AlignmentResult
+    from .strip_ih import StripResult
 
 Outcome = Literal["download", "skip", "missing", "failed"]
 # Outcome: (summary label, color), in summary order.
@@ -88,6 +89,17 @@ class Reporter:
         write_stderr(
             f"{'':{_TAG_WIDTH}} {inline(subject)} {inline(name)}: {inline(detail)}"
         )
+
+    def stripped(self, subject: str, result: StripResult) -> None:
+        detail = {
+            "updated": "updated",
+            "unchanged": "unchanged",
+            "unsupported": "not processed (unsupported format)",
+            "preserved": "unchanged (SRT contains drawing events)",
+        }[result.status]
+        if result.status == "updated" and not self.quiet:
+            detail += f"; {result.modified_cues} cues modified, {result.removed_cues} cues removed"
+        self.step(subject, "strip_ih", detail)
 
     def aligned(self, subject: str, result: AlignmentResult) -> None:
         details = ["complete"]

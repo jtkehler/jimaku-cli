@@ -23,6 +23,7 @@ from .download import (
     DEFAULT_PREFER_FORMAT,
     DEFAULT_QUIET,
     DEFAULT_RENAME,
+    DEFAULT_STRIP_IH,
     DEFAULT_SYNC,
     DEFAULT_VERBOSE,
     TRANSFER_ERRORS,
@@ -114,6 +115,13 @@ def search(
             help="Extra ffsubsync options as one quoted string; used only with --sync.",
         ),
     ] = DEFAULT_FFSUBSYNC_ARGS,
+    strip_ih: Annotated[
+        bool,
+        typer.Option(
+            envvar="JIMAKU_SEARCH_STRIP_IH",
+            help="Remove hearing-impaired annotations and ruby readings.",
+        ),
+    ] = DEFAULT_STRIP_IH,
 ) -> None:
     """Choose an entry and releases; print a download command and optionally run it."""
     client: JimakuClient = ctx.obj
@@ -220,6 +228,7 @@ def search(
         ("rename", rename, DEFAULT_RENAME),
         ("overwrite", overwrite, DEFAULT_OVERWRITE),
         ("sync", sync, DEFAULT_SYNC),
+        ("strip-ih", strip_ih, DEFAULT_STRIP_IH),
     ):
         if enabled != default:
             command.append(f"--{'' if enabled else 'no-'}{name}")
@@ -239,6 +248,7 @@ def search(
             overwrite=overwrite,
             sync=sync,
             ffsubsync_args=ffsubsync_args,
+            strip_ih=strip_ih,
             quiet=DEFAULT_QUIET,
             verbose=DEFAULT_VERBOSE,
         )

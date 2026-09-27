@@ -52,6 +52,7 @@ options take precedence; unset or empty variables use the built-in defaults.
 | `--overwrite` / `--no-overwrite` | `JIMAKU_SEARCH_OVERWRITE` |
 | `--sync` / `-s` / `--no-sync` | `JIMAKU_SEARCH_SYNC` |
 | `--ffsubsync-args` | `JIMAKU_SEARCH_FFSUBSYNC_ARGS` |
+| `--strip-ih` / `--no-strip-ih` | `JIMAKU_SEARCH_STRIP_IH` |
 
 Boolean values accept `true`, `1`, `yes`, or `on`, and `false`, `0`, `no`, or
 `off`, case-insensitively. Format values are `srt`, `ass`, `ssa`, `vtt`, or `sub`,
@@ -107,6 +108,7 @@ Options shared by `search` and `download`:
   each release. Other formats remain eligible; files are not converted.
 - `--all` / `--no-all`: download every match instead of the best one per episode.
 - `--overwrite` / `--no-overwrite`: re-download existing targets.
+- `--strip-ih` / `--no-strip-ih`: remove annotations and some ruby readings from SRT/ASS/SSA.
 - `--sync` / `-s` / `--no-sync`: synchronize timing to the video's audio with ffsubsync.
 - `--ffsubsync-args`: extra ffsubsync options as one quoted string, split like a shell
   command line but never run by a shell; ignored without `--sync`. For example,
@@ -120,7 +122,8 @@ All shared booleans default to false. Search alone accepts `--anime` / `--no-ani
 (anime by default) and `--download` / `--no-download` (print-only by default).
 Explicit negative flags override enabled search preferences.
 
-Syncing modifies downloaded subtitles in place. See
+Processing modifies downloaded subtitles in place. Stripping runs before alignment
+and **can remove real dialogue**; it is off by default. See
 [known issues](docs/known-issues.md) for filename-matching and output-collision
 limitations. Use `jimaku search --help` or `jimaku download --help` for all options.
 `-h` is available alongside `--help` on the root command and both subcommands.

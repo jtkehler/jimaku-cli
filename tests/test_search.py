@@ -175,7 +175,7 @@ def test_multi_selection_deduplicates_releases_and_replays_download(
     search = runner.invoke(
         cli.app,
         ["search", str(tmp_path), "--all" if download_all else "--no-all",
-         "--no-rename", "--no-overwrite", "--no-sync"],
+         "--no-rename", "--no-overwrite", "--no-sync", "--no-strip-ih"],
         input="1\n2 3 1\n",
     )
 
@@ -550,7 +550,7 @@ def test_search_passes_handling_options_to_the_emitted_command(tmp_path, enabled
         subtitle("[AssGroup] Show - 01.ass"),
     ]})
     client.entries.append(Entry(99, "Other Show", "2026-01-01T00:00:00Z"))
-    switches = ["all", "rename", "overwrite", "sync"]
+    switches = ["all", "rename", "overwrite", "sync", "strip-ih"]
     flags = [f"--{'' if enabled else 'no-'}{name}" for name in switches]
 
     result = CliRunner().invoke(
@@ -821,13 +821,14 @@ def test_search_resolves_environment_preferences_on_each_invocation(
         "JIMAKU_SEARCH_RENAME": "true",
         "JIMAKU_SEARCH_OVERWRITE": "true",
         "JIMAKU_SEARCH_SYNC": "true",
+        "JIMAKU_SEARCH_STRIP_IH": "true",
         "JIMAKU_SEARCH_ANIME": "false",
         "JIMAKU_SEARCH_DOWNLOAD": "true",
     }
     for name, value in preferences.items():
         monkeypatch.setenv(name, value)
     runner = CliRunner()
-    switches = ["all", "rename", "overwrite", "sync"]
+    switches = ["all", "rename", "overwrite", "sync", "strip-ih"]
     base = ["jimaku", "download", str(tmp_path.resolve()), "--id", "42"]
 
     inherited = runner.invoke(
@@ -1059,7 +1060,7 @@ def test_unparsed_release_command_replay_preserves_codec(tmp_path, monkeypatch):
     search = runner.invoke(
         cli.app,
         ["search", str(tmp_path), "--no-all", "--no-rename", "--no-overwrite",
-         "--no-sync", "--prefer-format", "srt"],
+         "--no-sync", "--no-strip-ih", "--prefer-format", "srt"],
         input="1\n1\n", catch_exceptions=False,
     )
 
@@ -1093,7 +1094,7 @@ def test_versioned_release_command_replay_preserves_dotted_codec(tmp_path, monke
     search = runner.invoke(
         cli.app,
         ["search", str(tmp_path), "--no-all", "--no-rename", "--no-overwrite",
-         "--no-sync", "--prefer-format", "srt"],
+         "--no-sync", "--no-strip-ih", "--prefer-format", "srt"],
         input="1\n2\n", catch_exceptions=False,
     )
 

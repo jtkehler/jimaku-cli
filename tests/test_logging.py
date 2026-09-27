@@ -88,6 +88,7 @@ def run(
     client: StubClient,
     *args: str,
     release: str = "re:.",
+    strip_ih: bool = False,
     sync: bool = False,
 ):
     """Invoke `download` against a stub with explicit release and handling options."""
@@ -101,6 +102,7 @@ def run(
             release,
             "--no-rename",
             "--no-overwrite",
+            "--strip-ih" if strip_ih else "--no-strip-ih",
             "--sync" if sync else "--no-sync",
             *args,
         ],
@@ -217,6 +219,35 @@ def test_an_unreadable_episode_number_exits_nonzero(library, tmp_path):
     assert result.exit_code != 0
 
 
+def test_a_strip_failure_is_tagged_failed(library, monkeypatch):
+    directory = library(1)
+    monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("bad encoding")))
+
+    result = run(directory, StubClient({1: [remote(1)]}), strip_ih=True)
+
+    assert "[failed]" in result.stderr
+    assert "bad encoding" in result.stderr
+
+
+def test_a_strip_failure_exits_nonzero(library, monkeypatch):
+    directory = library(1)
+    monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("bad encoding")))
+
+    result = run(directory, StubClient({1: [remote(1)]}), strip_ih=True)
+
+    assert result.exit_code != 0
+
+
+def test_a_strip_failure_leaves_the_subtitle_in_place(library, monkeypatch):
+    """A postprocessing failure must not discard a subtitle that already landed."""
+    directory = library(1)
+    monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("bad encoding")))
+
+    run(directory, StubClient({1: [remote(1)]}), strip_ih=True)
+
+    assert (directory / subtitle_name(1)).read_text(encoding="utf-8") == SUBTITLE_BODY
+
+
 def test_an_align_failure_is_tagged_failed(library, monkeypatch):
     directory = library(1)
     monkeypatch.setattr(
@@ -227,6 +258,22 @@ def test_an_align_failure_is_tagged_failed(library, monkeypatch):
 
     assert "[failed]" in result.stderr
     assert "ffmpeg missing" in result.stderr
+
+
+def test_a_failed_strip_still_gets_aligned(library, monkeypatch):
+    directory = library(1)
+    aligned: list[Path] = []
+    monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("bad encoding")))
+
+    def align(subtitle, video, *, show_progress, ffsubsync_args):
+        aligned.append(subtitle)
+        return postprocess.AlignmentResult()
+
+    monkeypatch.setattr(postprocess, "sync_subtitle", align)
+
+    run(directory, StubClient({1: [remote(1)]}), strip_ih=True, sync=True)
+
+    assert aligned == [directory / subtitle_name(1)]
 
 
 def _raising(error: Exception):
@@ -429,6 +476,23 @@ def test_caught_failures_show_tracebacks_only_at_diagnostic_tier(library, flags)
     assert ("Traceback" in result.stderr) == (flags == ("-v",))
 
 
+@pytest.mark.parametrize("flags", [("-q",), (), ("-v",)])
+def test_strip_reports_actual_changes_without_adding_outcomes(library, flags):
+    class JapaneseClient(StubClient):
+        def download_file(self, url, dest):
+            dest.write_text("1\n00:00:01,000 --> 00:00:02,000\n（信子）おはよう\n")
+
+    directory = library(1)
+    result = run(directory, JapaneseClient({1: [remote(1)]}), *flags, strip_ih=True)
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert "strip_ih: updated" in result.stderr
+    assert ("1 cues modified, 0 cues removed" in result.stderr) == (flags != ("-q",))
+    assert "1 downloaded" in result.stderr and "0 failed" in result.stderr
+    assert result.stderr.count("[download]") == 1
+    assert "（信子）" not in (directory / subtitle_name(1)).read_text()
+
+
 @pytest.fixture
 def alignment_backend(monkeypatch):
     def install(*, succeeds=True):
@@ -493,16 +557,19 @@ def test_failed_alignment_never_reports_completion(
 
 
 @pytest.mark.parametrize("flags", [("-q",), (), ("-v",)])
-def test_a_failed_alignment_counts_as_its_own_operation(library, monkeypatch, flags):
+def test_two_processing_failures_count_as_two_operations(library, monkeypatch, flags):
     directory = library(1)
+    monkeypatch.setattr(postprocess, "strip_ih", _raising(ValueError("strip failed")))
     monkeypatch.setattr(
         postprocess, "sync_subtitle", _raising(RuntimeError("align failed"))
     )
-    result = run(directory, StubClient({1: [remote(1)]}), *flags, sync=True)
+    result = run(
+        directory, StubClient({1: [remote(1)]}), *flags, strip_ih=True, sync=True
+    )
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert result.stderr.count("[failed]") == 1
-    assert "1 downloaded" in result.stderr and "1 failed" in result.stderr
+    assert result.stderr.count("[failed]") == 2
+    assert "1 downloaded" in result.stderr and "2 failed" in result.stderr
     assert (directory / subtitle_name(1)).read_text() == SUBTITLE_BODY
 
 
