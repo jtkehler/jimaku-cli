@@ -53,7 +53,9 @@ A session:
    falling back to a regex synthesized from the filename when the release can't be parsed.
 5. Advance through the remaining episodes, testing each against the patterns so far. At the first
    episode where nothing matches, prompt again and append the chosen releases as the next priorities.
-   Continue to the end of the directory.
+   Continue to the end of the directory, or stop early with Ctrl-X in a release prompt shown after
+   at least one release is recorded; rows marked in that prompt are ignored, and download reports
+   any episode still missing.
 6. Emit the `jimaku download` command: the entry ID, the accumulated release list in priority
    order, and the effective handling options. With `--download`, then call the existing downloader
    directly with those values; do not execute the emitted shell string.
@@ -65,12 +67,15 @@ the existing any-match fast-forward and download ranking remain unchanged.
 
 Entry selection is single-choice fzf; subtitle selection enables multi-choice. Type to fuzzy-filter,
 use Tab/Shift-Tab to mark releases, Enter to accept marks (or the highlighted item if none are marked),
-and Esc/Ctrl-C to cancel. In the entry picker only, Ctrl-R returns to `Search title:` for a new
-manual query, even when the local fuzzy filter has no matches. Use hidden numeric indices to map
-escaped labels back to original objects, not label equality or filename parsing. The shared
-`choose()` helper returns those indices in mark order, with an empty list reserved for an enabled
-Ctrl-R retry. Search needs an interactive terminal, but stdout can be redirected to save the
-command; `download` remains the unattended interface.
+and Ctrl-C to cancel; Esc also cancels in the entry picker. In the entry picker only, Ctrl-R returns
+to `Search title:` for a new manual query, even when the local fuzzy filter has no matches. In every
+release picker, Esc returns to the entry picker with the same results and no new API search; the
+abandoned entry's releases and per-episode failures are discarded, and the next chosen entry's walk
+restarts from the first video. Use hidden numeric indices to map escaped labels back to original
+objects, not label equality or filename parsing. The shared `choose()` helper maps extra fzf keys to
+header hints and returns the key pressed (empty for Enter) with those indices in mark order; an extra
+key returns no indices. Search needs an interactive terminal, but stdout can be redirected to save
+the command; `download` remains the unattended interface.
 
 `iterfzf` supplies its bundled fzf executable. Invoke it with `subprocess.run`, UTF-8 input,
 captured stdout, and inherited stderr so the UI stays out of the command payload. The iterfzf
@@ -81,7 +86,7 @@ do not replace it with a wait-before-read wrapper. Supported wheels bundle fzf, 
 
 Exclude `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` from the child's environment so shell
 defaults cannot auto-accept entries or change the result protocol. Leave the parent environment
-unchanged. Except for an explicit Ctrl-R retry (which fzf can report with exit 1 when its local
+unchanged. Except for a picker's expected extra key (which fzf can report with exit 1 when its local
 filter has no matches), cancellation, an empty selection, or a nonzero fzf exit aborts setup.
 Executable launch errors go through `log_error`. No failed selection emits a command or starts
 a download.
@@ -289,7 +294,7 @@ loads lazily under a small guard against its `basicConfig` side effect.
 ## Current state
 
 `search` implements the wizard above, including genre-first title retries, manual search input,
-release selection, and opt-in download execution.
+release selection with Esc back to entries and Ctrl-X finish, and opt-in download execution.
 
 `--sync` runs ffsubsync over the subtitle that just downloaded, replacing it in place. The CLI
 uses the native progress bar in terminals and suppresses it for cron/diagnostic output by
@@ -324,8 +329,9 @@ Send custom diagnostics through `log_error`, ordinary status/choices to stderr, 
 keep prompt input echoes off stdout. Prioritize simple, readable code over exhaustive filename
 edge-case handling. Test manual retries with real CLI input and fzf with a real PTY, including
 Japanese filtering, multi-selection order, escaped-label collisions, large selections exceeding pipe
-capacity, cancellation, and redirected-stdout payload isolation. Keep PTY waits bounded and clean up
-child processes on failure. Distinguish fixture-based API tests from live metadata checks.
+capacity, cancellation, Esc back and Ctrl-X finish, and redirected-stdout payload isolation. Keep
+PTY waits bounded and clean up child processes on failure. Distinguish fixture-based API tests from
+live metadata checks.
 
 Manage dependencies with `uv add`/`uv remove`, keep `uv.lock` synchronized, and check it with
 `uv lock --check`. Retain `iterfzf` for its executable and `ffsubsync` for lazy-loaded alignment,

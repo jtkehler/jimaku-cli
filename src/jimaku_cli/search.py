@@ -14,7 +14,7 @@ import guessit
 import typer
 from iterfzf import BUNDLED_EXECUTABLE
 
-from .api import JimakuClient
+from .api import Entry, JimakuClient
 from .colorscheme import FZF_COLORS
 from .download import (
     DEFAULT_DOWNLOAD_ALL,
@@ -144,71 +144,22 @@ def search(
             queries.append(title)
     if not queries:
         log_error(f"could not determine a title from {first.name}")
+    entries = find_entries(client, queries, anime=anime)
     while True:
-        if queries:
-            query: str = queries.pop(0)
-        else:
-            # Keep the prompt and input echo out of the command payload.
-            with redirect_stdout(sys.stderr):
-                query = typer.prompt("Search title", err=True).strip()
-            if not query:
-                continue
-        typer.echo(f"Searching for {inline(query)}…", err=True)
-        try:
-            entries = client.search_entries(query=query, anime=anime)
-        except TRANSFER_ERRORS as exc:
-            log_error(f"could not search entries: {exc}")
-            raise typer.Exit(1) from exc
-        if entries:
-            selected = choose(
-                "Entry",
-                [f"{entry.name} (ID {entry.id})" for entry in entries],
-                retry=True,
-            )
-            if selected:
-                [entry_index] = selected
-                break
-            queries.clear()
-            continue
-        message = f"no entries found for {query!r}"
-        if anime:
-            message += ". Use --no-anime to search live action."
-        log_error(message)
-    entry = entries[entry_index]
-
-    releases: list[str] = []
-    failed = False
-    for video, episode in videos:
-        if episode is None and guessit.guessit(video.name).get("type") == "episode":
-            log_error(f"{video.name}: could not determine an episode number")
-            failed = True
-            continue
-        try:
-            files = client.get_files(entry.id, episode)
-        except TRANSFER_ERRORS as exc:
-            log_error(f"{video.name}: could not retrieve subtitles: {exc}")
-            failed = True
-            continue
-        if releases and filter_release(files, releases, prefer_format):
-            continue
-        candidates = filter_release(files, [], prefer_format)
-        if not candidates:
-            log_error(f"{video.name}: no subtitles available")
-            continue
-        typer.echo(f"Subtitles for {inline(video.name)}:", err=True)
-        selected = choose(
-            "Subtitle release", [file.name for file in candidates], multi=True
+        key, selected = choose(
+            "Entry",
+            [f"{entry.name} (ID {entry.id})" for entry in entries],
+            keys={"ctrl-r": "Ctrl-R: new search"},
         )
-        for index in selected:
-            pattern = release_pattern(candidates[index].name)
-            if pattern not in releases:
-                releases.append(pattern)
-
-    if failed:
-        raise typer.Exit(1)
-    if not releases:
-        log_error("no subtitle releases selected; no command generated")
-        raise typer.Exit(1)
+        if key == "ctrl-r":
+            # A manual search skips any remaining automatic title.
+            entries = find_entries(client, [], anime=anime)
+            continue
+        [entry_index] = selected
+        entry = entries[entry_index]
+        releases = choose_releases(client, entry.id, videos, prefer_format)
+        if releases is not None:
+            break
 
     command: list[str] = ["jimaku", "download", str(directory), "--id", str(entry.id)]
     for release in releases:
@@ -242,6 +193,81 @@ def search(
             quiet=DEFAULT_QUIET,
             verbose=DEFAULT_VERBOSE,
         )
+
+
+def find_entries(client: JimakuClient, queries: list[str], *, anime: bool) -> list[Entry]:
+    """Search queries in order (consuming them), then manual titles, until one finds entries."""
+    while True:
+        if queries:
+            query: str = queries.pop(0)
+        else:
+            # Keep the prompt and input echo out of the command payload.
+            with redirect_stdout(sys.stderr):
+                query = typer.prompt("Search title", err=True).strip()
+            if not query:
+                continue
+        typer.echo(f"Searching for {inline(query)}…", err=True)
+        try:
+            entries = client.search_entries(query=query, anime=anime)
+        except TRANSFER_ERRORS as exc:
+            log_error(f"could not search entries: {exc}")
+            raise typer.Exit(1) from exc
+        if entries:
+            return entries
+        message = f"no entries found for {query!r}"
+        if anime:
+            message += ". Use --no-anime to search live action."
+        log_error(message)
+
+
+def choose_releases(
+    client: JimakuClient,
+    entry_id: int,
+    videos: list[tuple[Path, int | None]],
+    prefer_format: str,
+) -> list[str] | None:
+    """Prompt only for episodes the releases so far miss; None means choose another entry."""
+    releases: list[str] = []
+    failed = False
+    for video, episode in videos:
+        if episode is None and guessit.guessit(video.name).get("type") == "episode":
+            log_error(f"{video.name}: could not determine an episode number")
+            failed = True
+            continue
+        try:
+            files = client.get_files(entry_id, episode)
+        except TRANSFER_ERRORS as exc:
+            log_error(f"{video.name}: could not retrieve subtitles: {exc}")
+            failed = True
+            continue
+        if releases and filter_release(files, releases, prefer_format):
+            continue
+        candidates = filter_release(files, [], prefer_format)
+        if not candidates:
+            log_error(f"{video.name}: no subtitles available")
+            continue
+        typer.echo(f"Subtitles for {inline(video.name)}:", err=True)
+        keys = {"esc": "Esc: back to entries"}
+        if releases:
+            keys["ctrl-x"] = "Ctrl-X: finish with earlier releases"
+        key, selected = choose(
+            "Subtitle release", [file.name for file in candidates], multi=True, keys=keys
+        )
+        if key == "esc":
+            return None
+        if key == "ctrl-x":
+            # Later episodes need no prompt; download reports any still missing.
+            break
+        for index in selected:
+            pattern = release_pattern(candidates[index].name)
+            if pattern not in releases:
+                releases.append(pattern)
+    if failed:
+        raise typer.Exit(1)
+    if not releases:
+        log_error("no subtitle releases selected; no command generated")
+        raise typer.Exit(1)
+    return releases
 
 
 def release_pattern(filename: str) -> str:
@@ -279,12 +305,14 @@ def choose(
     labels: list[str],
     *,
     multi: bool = False,
-    retry: bool = False,
-) -> list[int]:
-    """Choose by hidden index; return [] only for an enabled Ctrl-R retry.
+    keys: dict[str, str] | None = None,
+) -> tuple[str, list[int]]:
+    """Choose by hidden index; return the extra key pressed ("" for Enter) and indices.
 
+    `keys` maps extra fzf keys to header hints; an extra key returns no indices.
     fzf's UI uses stderr, not the command payload.
     """
+    keys = keys or {}
     env = {
         name: value
         for name, value in os.environ.items()
@@ -296,12 +324,14 @@ def choose(
         else f"--color={FZF_COLORS}"
     )
     header = (
-        "Tab/Shift-Tab: mark in priority order; Enter: accept; Esc: cancel"
+        "Tab/Shift-Tab: mark in priority order; Enter: accept"
         if multi
-        else "Type to search; Enter to select; Esc to cancel"
+        else "Type to search; Enter: select"
     )
-    if retry:
-        header += "; Ctrl-R: new search"
+    # Key hints get their own line; fzf truncates long header lines on narrow terminals.
+    header += "\n" + "; ".join(
+        [*keys.values(), "Ctrl-C: cancel" if "esc" in keys else "Esc: cancel"]
+    )
     try:
         # iterfzf's callable waits before reading stdout and can fill the result pipe.
         # run() uses communicate() to drain it while fzf is still running.
@@ -317,7 +347,7 @@ def choose(
                 "--with-nth=2..",
                 "--height=40%",
                 "--layout=reverse",
-                *(("--expect=ctrl-r",) if retry else ()),
+                *((f"--expect={','.join(keys)}",) if keys else ()),
             ],
             input="".join(
                 f"{index}\t{inline(label)}\n" for index, label in enumerate(labels)
@@ -333,11 +363,12 @@ def choose(
         log_error(f"could not run fzf: {exc}")
         raise typer.Exit(1) from exc
     output = process.stdout
-    if retry:
-        key, _, output = output.partition(b"\n")
+    if keys:
+        line, _, output = output.partition(b"\n")
+        key = line.decode()
         # fzf exits 1 if the local filter has no matches, even with an expected key.
-        if key == b"ctrl-r" and process.returncode in (0, 1):
-            return []
+        if key in keys and process.returncode in (0, 1):
+            return key, []
     if process.returncode != 0 or not output:
         raise typer.Abort()
-    return [int(row.split(b"\t", 1)[0]) for row in output.splitlines()]
+    return "", [int(row.split(b"\t", 1)[0]) for row in output.splitlines()]

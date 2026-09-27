@@ -112,7 +112,7 @@ def child_main(mode: str, directory: str) -> None:
             elif mode == "choose-bulk":
                 labels = [f"Release {index:03} " + "日本語" * 60 for index in range(350)]
             try:
-                result = search.choose(
+                _, result = search.choose(
                     "Fixture choice",
                     labels,
                     multi=mode in {"choose-multi", "choose-bulk"},
@@ -501,8 +501,80 @@ def test_search_ctrl_r_retries_manual_queries_with_and_without_local_matches(
         assert b"[fixture API] get_files 99 7" in session.terminal
 
 
-@pytest.mark.parametrize("stage", ["entry", "release", "later-release"])
-@pytest.mark.parametrize("key", [b"\x1b", b"\x03", b"\x04"], ids=["esc", "ctrl-c", "eof"])
+def test_search_esc_returns_from_release_selection_to_entries(
+    child_command: ChildCommand,
+) -> None:
+    with start_session(child_command, "search") as session:
+        session.wait_for("2/2")
+        session.query("別の作品", 2)
+        offset = session.send(b"\r")
+        session.wait_for("3/3", after=offset)
+        session.query("Gamma", 3)
+        offset = session.send(b"\t")
+        session.wait_for("(1)", after=offset)
+        # Back to the same results; the marked Gamma is discarded with its entry.
+        offset = session.send(b"\x1b")
+        session.wait_for("2/2", after=offset)
+        session.query("フリーレン", 2)
+        offset = session.send(b"\r")
+        session.wait_for("3/3", after=offset)
+        session.query("Alpha", 3)
+        _ = session.send(b"\r")
+        assert session.finish() == 0, session.diagnostic()
+        assert shlex.split(session.stdout.decode()) == [
+            "jimaku",
+            "download",
+            str(child_command.videos.resolve()),
+            "--id",
+            "99",
+            "--release",
+            "Alpha",
+        ]
+        assert session.stdout.count(b"\n") == 1
+        assert session.terminal.count(FZF_STARTED) == 4
+        assert re.findall(r"\[fixture API\] [^\r\n]+", session.terminal.decode()) == [
+            "[fixture API] search_entries 'Show' anime=True",
+            "[fixture API] get_files 42 1",
+            "[fixture API] get_files 99 1",
+        ]
+
+
+def test_search_ctrl_x_finishes_with_earlier_releases(child_command: ChildCommand) -> None:
+    (child_command.videos / "Show - 02.mkv").touch()
+    with start_session(child_command, "search") as session:
+        select_fixture_entry(session)
+        session.query("Gamma", 3)
+        offset = session.send(b"\r")
+        # Episode 2 lists only Delta, which Gamma does not match.
+        session.wait_for("1/1", after=offset)
+        offset = session.send(b"\t")
+        session.wait_for("(1)", after=offset)
+        _ = session.send(b"\x18")
+        assert session.finish() == 0, session.diagnostic()
+        # The marked Delta is ignored; only releases from earlier prompts remain.
+        assert shlex.split(session.stdout.decode()) == [
+            "jimaku",
+            "download",
+            str(child_command.videos.resolve()),
+            "--id",
+            "99",
+            "--release",
+            "Gamma",
+        ]
+        assert session.stdout.count(b"\n") == 1
+        assert session.terminal.count(FZF_STARTED) == 3
+
+
+@pytest.mark.parametrize(
+    "stage, key",
+    [
+        pytest.param(stage, key, id=f"{name}-{stage}")
+        for stage in ("entry", "release", "later-release")
+        for name, key in (("esc", b"\x1b"), ("ctrl-c", b"\x03"), ("eof", b"\x04"))
+        # In release pickers, Esc returns to entry selection instead.
+        if name != "esc" or stage == "entry"
+    ],
+)
 def test_search_fixture_api_cancellation_has_no_partial_command(
     child_command: ChildCommand, stage: str, key: bytes,
 ) -> None:

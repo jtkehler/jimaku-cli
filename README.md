@@ -86,7 +86,11 @@ jimaku search . --no-download        # print a reusable command without download
 
 Type to filter and Enter to accept. In the entry picker, Ctrl-R starts a new search
 with a manually entered title if none of the results is right. Use Tab/Shift-Tab to
-mark releases in priority order. Esc or Ctrl-C cancels. Search asks for fallback
+mark releases in priority order. In a release picker, Esc returns to the entry list
+and discards the releases chosen for that entry. Once a release is chosen, later
+release pickers accept Ctrl-X to finish with the releases chosen so far, for example
+when a new episode has no upload from them yet; rows marked in that picker are
+ignored. Ctrl-C cancels, as does Esc in the entry picker. Search asks for fallback
 releases only when needed; choosing several does not enable `--all`.
 
 For repeat downloads, use the generated command or supply a Jimaku entry ID and

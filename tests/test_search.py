@@ -25,8 +25,10 @@ from jimaku_cli.search import app, choose, release_pattern
 def fzf_input(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub only the terminal UI: test input is one-based indices per prompt.
 
-    Space-separated indices represent items marked in that order. Manual title
-    prompts still use real Typer input. Real fzf is exercised by the PTY tests.
+    Space-separated indices represent items marked in that order. An input line
+    naming an expected fzf key, such as `ctrl-r`, `esc`, or `ctrl-x`, presses that
+    key. Manual title prompts still use real Typer input. Real fzf is exercised by
+    the PTY tests.
     """
     for name in tuple(os.environ):
         if name.startswith("JIMAKU_SEARCH_"):
@@ -44,13 +46,19 @@ def fzf_input(monkeypatch: pytest.MonkeyPatch) -> None:
         answer = sys.stdin.readline()
         if not answer:
             raise KeyboardInterrupt
-        if "--expect=ctrl-r" in args and answer.strip() == "ctrl-r":
-            return subprocess.CompletedProcess(args, 0, stdout=b"ctrl-r\n")
+        expected = [
+            key
+            for arg in args
+            if arg.startswith("--expect=")
+            for key in arg.removeprefix("--expect=").split(",")
+        ]
+        if answer.strip() in expected:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{answer.strip()}\n".encode())
         indices = [int(value) - 1 for value in answer.split()]
         if "--multi" not in args:
             assert len(indices) == 1, "entry selection must be single-choice"
         selected = "".join(rows[index] + "\n" for index in indices).encode("utf-8")
-        if "--expect=ctrl-r" in args:
+        if expected:
             selected = b"\n" + selected
         return subprocess.CompletedProcess(args, 0, stdout=selected)
 
@@ -113,7 +121,7 @@ def test_search_selects_an_entry_with_fzf(
         rows = input.decode("utf-8").splitlines()
         calls.append((rows, args))
         row = rows[1] if len(calls) == 1 else rows[0]
-        if "--expect=ctrl-r" in args:
+        if any(arg.startswith("--expect=") for arg in args):
             row = "\n" + row
         return subprocess.CompletedProcess(args, 0, stdout=(row + "\n").encode("utf-8"))
 
@@ -151,6 +159,48 @@ def test_search_selects_multiple_releases_in_mark_order(tmp_path: Path) -> None:
     assert result.stderr.count("Subtitle release:") == 2
     assert client.listed == [(42, 1), (42, 2), (42, 3)]
     assert result.stdout.count("\n") == 1
+
+
+def test_esc_at_a_later_release_prompt_restarts_from_entry_selection(tmp_path: Path) -> None:
+    for episode in (1, 2):
+        (tmp_path / f"Show - {episode:02}.mkv").touch()
+    client = SearchClient({
+        1: [subtitle("[Alpha] Show - 01.srt"), subtitle("[Beta] Show - 01.srt")],
+        2: [subtitle("[Gamma] Show - 02.srt")],
+    })
+    client.entries.append(Entry(99, "Other Show", "2026-01-01T00:00:00Z"))
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path)], obj=client, input="1\n1\nesc\n2\n2\n1\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert command[command.index("--id") + 1] == "99"
+    # Alpha belonged to the abandoned entry; the new walk restarts at episode 1.
+    assert releases(command) == ["Beta", "Gamma"]
+    assert client.searched == [("Show", True)]
+    assert client.listed == [(42, 1), (42, 2), (99, 1), (99, 2)]
+
+
+def test_ctrl_x_finishes_with_earlier_releases(tmp_path: Path) -> None:
+    for episode in (1, 2, 3):
+        (tmp_path / f"Show - {episode:02}.mkv").touch()
+    client = SearchClient({
+        1: [subtitle("[Alpha] Show - 01.srt")],
+        2: [subtitle("[Beta] Show - 02.srt")],
+        3: [subtitle("[Beta] Show - 03.srt")],
+    })
+
+    result = CliRunner().invoke(
+        app, [str(tmp_path)], obj=client, input="1\n1\nctrl-x\n", catch_exceptions=False
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert releases(shlex.split(result.stdout)) == ["Alpha"]
+    # Continuing the walk would prompt for episode 3 and abort on EOF.
+    assert client.listed == [(42, 1), (42, 2)]
 
 
 @pytest.mark.parametrize("download_all", [False, True])
@@ -762,7 +812,7 @@ def test_selection_isolated_from_shell_fzf_defaults(
             _ = choose("Entry", ["Show"])
         assert error.value.exit_code == 1
     else:
-        assert choose("Entry", ["Show"]) == [0]
+        assert choose("Entry", ["Show"]) == ("", [0])
     parent_unchanged = dict(os.environ) == original
     assert parent_unchanged
 
