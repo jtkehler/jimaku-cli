@@ -11,9 +11,9 @@ def test_outcomes_keep_visibility_summary_and_exit_independent(capsys, quiet):
     report.record("download", "新作 [01].srt", "downloaded")
     report.record("skip", "existing.srt", "already present")
     report.record("missing", "Show.mkv", "no subtitle")
-    report.step("新作 [01].srt", "strip_ih", "updated")
+    report.step("新作 [01].srt", "ffsubsync", "complete")
     assert report.exit_code == 0
-    report.record("failed", "新作 [01].srt", "strip failed")
+    report.record("failed", "新作 [02].srt", "download failed")
     report.record("failed", "新作 [01].srt", "alignment failed")
     report.print_summary()
 
@@ -109,30 +109,6 @@ def test_output_respects_color_policy(monkeypatch, environment, forced, colored)
     if colored:
         assert "\x1b[1m" in result.stderr and "\x1b[2m" in result.stderr
         assert "\x1b[22m" not in result.stderr
-
-
-@pytest.mark.parametrize("quiet", [False, True])
-@pytest.mark.parametrize(
-    "status, expected",
-    [
-        ("updated", "updated"),
-        ("unchanged", "unchanged"),
-        ("unsupported", "not processed (unsupported format)"),
-        ("preserved", "unchanged (SRT contains drawing events)"),
-    ],
-)
-def test_strip_details_do_not_claim_changes_for_untouched_files(
-    capsys, quiet, status, expected
-):
-    from jimaku_cli.strip_ih import StripResult
-
-    report = output.Reporter(quiet=quiet)
-    report.stripped("Show.srt", StripResult(status))
-    report.print_summary()
-    if status == "updated" and not quiet:
-        expected += "; 0 cues modified, 0 cues removed"
-    assert capsys.readouterr().err.strip() == f"Show.srt strip_ih: {expected}"
-    assert report.exit_code == 0
 
 
 def test_default_reporter_shows_every_outcome(capsys):

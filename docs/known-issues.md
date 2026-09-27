@@ -6,84 +6,9 @@ this document is not a claim that the proposed fixes are implemented.
 The subsequent fixes cover unique atomic-download temporaries, lowercase downloaded
 subtitle extensions, and `--no-all`. The temporary-file concurrency bug required
 **overlapping invocations**, not parallel downloads within one invocation. Unique
-temporaries do not serialize the complete download → strip → align pipeline.
+temporaries do not serialize the complete download → align pipeline.
 
-## 1. Stripping can delete whispered dialogue
-
-**Priority: high — demonstrated dialogue loss.**
-
-Location: `strip_ih.py`, `is_leading_label`, `looks_spoken`, and
-`strip_parenthesised`.
-
-Corpus file:
-
-```text
-entry-11891__Uchimura_Summers_Second/内村さまぁ~ず.S03E03.#277『全員50歳になる事だしもういい加減今年こそ人間ドックで体の不安を解消したい男達!!』.WEBRip.Amazon.ja-jp[sdh].srt
-```
-
-Cue 1024, `00:38:38,016`:
-
-```text
-Before: （内村）（この２つで）\N（みゆ）はい
-After:  はい
-```
-
-Surrounding cues establish a whispered relay about two illnesses. The classifier
-mistakes `この２つで` for another label, borrowing evidence from the following
-speaker's line. Cue 1136 also loses the whispered noun fragment `フォアグラ`:
-
-```text
-（三村）（フォアグラ）\N（みゆ）うん うん うん
-```
-
-### Research direction
-
-Conservatively preserve ambiguous group-only chains, including their preceding
-label, and exclude those chains from label learning. For the first example:
-
-```text
-（内村）（この２つで）\Nはい
-```
-
-Keeping `内村` is deliberate. Merely retaining preceding groups as context or
-stopping following context at the next group rescued the phrase on pass one but
-**deleted it on pass two** after its structural protection disappeared.
-
-The narrower chain prototype changed 49 cues in 26 corpus files. Both that
-prototype and the combined stripping prototype were serialized and run twice on
-all 26 affected files; each was byte-stable on pass two. Some genuine annotation
-chains, such as `(ｽﾋﾟｰｶｰ)(国崎)`, were retained. That is an intentional conservative
-tradeoff, not perfect speech classification.
-
-Do not simply lower the hiragana threshold: changing the minimum length from five
-to four affected 2,313 cues in 265 files, including many actual speaker names.
-Adding `で` to spoken endings affected 351 cues in 208 files, retained annotations
-such as `小声で`, and did not fix noun fragments.
-
-Acceptance tests must include complete-file label learning, repeated processing,
-ordinary multiline labels, nested ruby, and the two real dialogue examples.
-
-## 2. Learned labels bypass the object-particle safeguard
-
-Location: `strip_ih.py`, `strip_parenthesised`.
-
-A two-cue file reproduces the problem:
-
-```text
-（君の声）こんにちは → こんにちは
-（君の声）を聞いた   → を聞いた
-```
-
-The learned-label branch bypasses `is_leading_label`'s `を` guard and removes the
-sentence object. Share the safeguard between learned and inferred label removal,
-**not ruby removal**: `漢字(かんじ)を読む` must still become `漢字を読む`.
-
-Research found one corpus false-negative cost when sharing the existing cue-level
-guard: a legitimate `三村` label before a cross-line continuation starting `を`
-remains. The particle rule is conservative evidence, not an absolute grammatical
-guarantee for subtitle fragments.
-
-## 3. Fractional episodes and numbered specials select ordinary episodes
+## 1. Fractional episodes and numbered specials select ordinary episodes
 
 Location: `download.py`, `parse_episode`.
 
@@ -103,7 +28,7 @@ values **before** integer fallback. Do not reject every `anime_type`: TV and
 numbered ONA series also use that field. Keep GuessIt for cases Anitopy cannot
 parse, rather than replacing both with a large regex.
 
-## 4. Malformed episode identifiers silently take the movie path
+## 2. Malformed episode identifiers silently take the movie path
 
 Location: `download.py`, `parse_episode` and the per-video classification branch.
 
@@ -128,7 +53,7 @@ Unresolved policy: bare `86.mkv` could be a title or an episode. Broad English
 support boundary. The research candidate passed 24 filename cases, not every
 possible naming convention.
 
-## 5. Parent directory names affect numberless classification
+## 3. Parent directory names affect numberless classification
 
 Location: `download.py`, the call to `guessit.guessit(video)`.
 
@@ -145,7 +70,7 @@ explicit position and filename tie-breaker.
 Filename-parser tests should use a stable parent path: incidental pytest directory
 numbers can mask the existing malformed-episode failure.
 
-## 6. Different releases can collapse into one output
+## 4. Different releases can collapse into one output
 
 Location: `download.py`, `parse_release`, `filter_release`, `output_name`, and the
 write loop.
@@ -191,7 +116,7 @@ The contract also needs clarification: strict output-path skipping cannot make
 output path. Keep this decision explicit rather than silently introducing a
 per-directory database or broad subtitle glob.
 
-## 7. Final output filenames lack defensive containment
+## 5. Final output filenames lack defensive containment
 
 Location: `download.py`, output path construction.
 
@@ -215,7 +140,7 @@ Resolved-path validation alone is not a defense against a local attacker racing
 replacement of directory components or symlinks. That threat model is separate
 from malformed API data.
 
-## 8. The API key is forwarded to initial off-origin downloads
+## 6. The API key is forwarded to initial off-origin downloads
 
 Location: `api.py`, `JimakuClient.__init__` and `download_file`.
 
@@ -236,7 +161,7 @@ identity. Do not reject legitimate off-origin/CDN downloads or globally disable
 `trust_env` and change proxy/CA behavior. Suppressing the Jimaku key does not imply
 that requests cannot use `.netrc` or URL credentials.
 
-## 9. Network exception messages can expose sensitive URLs
+## 7. Network exception messages can expose sensitive URLs
 
 Location: `download.py`, failure reporting; `output.py`, `_DiagnosticFormatter`.
 
@@ -261,39 +186,9 @@ No drop-in diagnostic formatter satisfying these constraints was validated.
 Test malformed hosts/ports, query/fragment/userinfo/path tokens, percent encoding,
 path-only errors, chained exceptions, notes, and formatter-failure fallback.
 
-## 10. Tidying removes untouched ASS display lines
-
-Location: `strip_ih.py`, `tidy_lines`.
-
-```text
-Before: （信子）おはよう\N\Nそのまま
-After:  おはよう\Nそのまま
-```
-
-The unchanged empty display line disappears despite `untouched=True`. Empty-tag
-cleanup can also affect untouched surviving lines. This is stripper behavior,
-not the explicitly accepted SRT writer normalization.
-
-Research retained untouched lines even when invisible and avoided sweeping
-untouched survivors. Effective differences reached 10,434 cues in 109 files,
-including 10,422 ASS cues; the remaining 12 SRT differences may normalize on save.
-These counts describe text preservation differences, not semantic accuracy or
-serialized-byte differences.
-
-**The prototype is incomplete:** the final backward markup-carry merge can still
-sweep a previous untouched line. Finish the provenance-focused carry audit and
-keep this larger formatting change separate from the narrow dialogue-loss fix.
-
 ## Verification context
 
 - Review baseline: 223 passing tests and the malformed-episode failure above.
-- Original stripping was run twice on copies of all 6,733 supported corpus files:
-  5,764 updated, 956 unchanged, 13 parse/timestamp failures. All 6,720 successful
-  files were byte-stable on pass two. Idempotence does not prove dialogue safety.
-- Fix research compared in-memory results across 6,727 parsable files; six parser
-  errors and the additional known timestamp refusals were tracked separately.
-- The combined stripping research candidate passed 13 focused tests and introduced
-  no new existing-suite failures. It was **not applied**.
 - HTTP/security/selection reproductions used mocks and temporary directories.
   ffsubsync checks used real code with subtitle references, not video/audio.
 - Production fixes have their own committed regression tests; none of the deferred

@@ -33,12 +33,6 @@ left alone. Non-interactive and safe to re-run.
 | `--overwrite` | Re-download episodes that already have subtitles. |
 | `--sync` / `-s` | Time-align the subtitle against the video's audio, with ffsubsync. |
 | `--ffsubsync-args ARGS` | One quoted string of extra ffsubsync options, split with `shlex.split()` (never run by a shell) and appended after Jimaku's own video, input and output operands. Ignored without `--sync`. Not validated: the user is responsible for what it contains. |
-| `--strip-ih` | Remove hearing-impaired annotations — speaker labels, sound effects, music markers — and ruby readings written as halfwidth-parenthesised kana after kanji or as HTML `<ruby>`.
-Halfwidth is the whole of the parenthesised rule: the fullwidth pair is prescribed for speaker IDs,
-sound effects and whispered dialogue, and ruby is set as positioned text rather than parenthesised,
-so a fullwidth group is spoken or annotated until shown otherwise — at the cost of the 78 corpus
-readings written `姉弟（きょうだい）`. Reaches `.srt`, `.ass` and `.ssa`; `.vtt` and `.sub` are not
-processed. ASS furigana set as separately positioned text under a ruby-named style is a different thing and is left alone; the corpus holds 5,262 such events across 125 files. |
 | `--quiet` / `-q` | Show only downloads, their basic processing results, and errors. Skipped/missing-only runs stay silent. |
 | `--verbose` / `-v` | Add diagnostic logs and caught-failure tracebacks. |
 
@@ -107,7 +101,7 @@ Anitopy with a GuessIt fallback, and named releases still use GuessIt's group/se
 
 **`search` takes no `--release`; it produces one.** It does take the options that describe what to
 do with files once filtered — `--prefer-format`, `--all`, `--rename` / `-r`, `--overwrite`,
-`--sync` / `-s`, `--ffsubsync-args`, `--strip-ih` — including their negative boolean forms. Only nondefault resolved preferences
+`--sync` / `-s`, `--ffsubsync-args` — including their negative boolean forms. Only nondefault resolved preferences
 are recorded in the command: compare against the shared `DEFAULT_*` constants in `download.py`,
 emitting a positive or negative flag only when a boolean differs from its default. Currently this
 omits `srt` and false handling settings; a nonblank `--ffsubsync-args` string is emitted as given
@@ -149,8 +143,8 @@ there is no `config` command.
 
 Each search option declares its own native `typer.Option(envvar=...)`: `JIMAKU_SEARCH_DOWNLOAD`,
 `JIMAKU_SEARCH_ANIME`, `JIMAKU_SEARCH_PREFER_FORMAT`, `JIMAKU_SEARCH_ALL`,
-`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_SYNC`, `JIMAKU_SEARCH_FFSUBSYNC_ARGS`, and
-`JIMAKU_SEARCH_STRIP_IH`. Typer reads values on each invocation. Explicit command-line options
+`JIMAKU_SEARCH_RENAME`, `JIMAKU_SEARCH_OVERWRITE`, `JIMAKU_SEARCH_SYNC`, and
+`JIMAKU_SEARCH_FFSUBSYNC_ARGS`. Typer reads values on each invocation. Explicit command-line options
 take precedence over environment values, which take precedence over built-in defaults. Unset
 or empty variables use defaults. Native boolean and format conversion applies. The ffsubsync
 option string is forwarded unchanged, included in the generated command, and split only at
@@ -245,126 +239,6 @@ neighbour.
 video: report, count it, continue to the next. Post-processing failure likewise must not abort the
 batch or discard a subtitle that already downloaded successfully; it still makes the run exit nonzero.
 
-**Parentheses are candidates, not proof of hearing-impaired text.** Japanese providers use both
-halfwidth and fullwidth parentheses for speaker labels, sound effects and ruby, but also for real
-whispered or mouthed dialogue. Remove a balanced group only when it precedes visible dialogue and
-does not itself look spoken, repeats elsewhere as a learned speaker label, occupies a display line
-and ends in stable sound/source wording, or is a kana reading immediately after kanji. An ambiguous
-full-cue parenthetical stays. False negatives are cheaper than deleted dialogue. Other brackets stay:
-`＜＞`, `《》` and `｟｠` carry thoughts, narration or speech in the corpus; `「」` carries quotation.
-HTML ruby is semantic rather than heuristic: remove closed `<rt>`/`<rp>` readings and unwrap the
-`<ruby>`/`<rb>` container while retaining its base text.
-
-**What a word is evidence of decides which test it feeds.** Sound wording — `音`, `声`, `笑い`,
-`ため息` — says the group describes what is heard, so it vetoes learning that group as a speaker
-label. Wording that names *who* speaks does not: `一同`, `全員`, `ナレーション`, `通訳`, `電子音声`
-and the languages label the line they precede exactly as `（信子）` does, and vetoing them would
-leave `（一同）はい！` standing while the identical `（２人）` stripped. Source is read before sound,
-so `電子音声` is not the `声` its tail ends in. `〜の声` and `〜の音声` are read the same way and for
-the same reason: `（リサの声）` names a speaker heard off screen and `（テレビの音声）` a source, and
-both label the line they follow onto exactly as `（信子）` does. Read instead as the sound their tail
-ends in, they vetoed their own labels — 2,728 corpus strips, `声` ending every one of them.
-
-`鈴` is matched whole rather than as a tail, because it is also how a name ends and `（美鈴）` is a
-girl, not a bell; `鐘`, `息` and `咳` end far more sound words than names, so they stay tails and
-`（震える息）` goes on stripping. `ベル` cannot be sorted by shape at all — `（ドアベル）` is a
-doorbell and `（アベル）` is a man, katakana to the end either way — so it is sorted by position
-instead. A group that is the whole annotation is the bell it was listed for; one that precedes
-dialogue is labelling it. The word describes a sound without ruling out a speaker, which recovers
-531 labels and still drops the 192 standalone bells. `音` sits the same way but keeps its veto,
-because lifting it would read `（風の音）だった` as a label on its own sentence, so the names ending
-in `音` — `（詩音）`, `（花音）` — stay a deliberate false negative.
-
-**A group is not a label on a line that opens with `を`.** A Japanese sentence cannot, so the group
-is that sentence's object rather than a label on it, and `（君の声）を聞いた` is one line of
-dialogue. Only the label test asks. A reading is followed by the rest of its own sentence as a
-matter of course, so guarding ruby on the same particle would give back 1,514 strips, while
-guarding the label costs none at all.
-
-**A group is normalized against furigana written inside it before either test, not just before the
-vocabulary.** `(大谷敦士(おおたにあつし))` is 64% hiragana with the reading and none without it, so
-counting its kana is how a label ends up read as speech.
-
-**An honorific or a role names a person, not a line.** A group ending in `ちゃん`, `さん`, `くん`,
-`君`, `様`, `先生`, `せんせー`, `たち` or `達` is a label however much kana it holds. A single latin
-letter closing a group that is otherwise not latin tells one role from another — `（店員A）`,
-`（いじめっ子Ｂ）`, `（ｽﾀｯﾌC）` — and names a speaker for the same reason; the character before it has
-to be non-latin, or `（ＨＥＹ）` and `（ＰＨＳ）` read as IDs too. Bare kana names — `（しんのすけ）`,
-`（はるか）` — are ambiguous by shape and are deliberately still kept.
-
-**Notation that qualifies the line sits where a label sits and is not one.** `（仮）` — "tentative" —
-precedes dialogue exactly as `（信子）` does, so it is named in a small vocabulary of non-labels
-beside the sound and source wording. One corpus instance against 6,733 files, but deleting dialogue
-is the expensive direction. Two structural rules were measured instead and both cost more than they
-saved: a minimum length would reject 37,472 legitimate one-character labels — given names, and the
-`２人` / `３人` group labels that sit alongside `（一同）` — and rejecting a body that also appears
-mid-line in the same file would cost 11,434 strips across 548 bodies, the top conflicts being plain
-character names, because characters say each other's names.
-
-The line is who made the mess. Annotation goes, and so does empty markup removing it leaves — an
-`<i></i>` with nothing between its halves once `<i>（ドアが開く音）</i>` is gone is not something
-the cue ever asked for. Punctuation and formatting the strip did not create stay: an unmatched or
-mismatched parenthesis is left where it is, and ARIB's `((…))` passes through whole.
-
-A display line may open with a marker that is not dialogue, and who made the mess decides that too.
-Anything alphanumeric before the group is real text and blocks the strip. What is left does not
-block, and of it only an audio-source marker leaves with the group — a phone, television or speaker
-icon, or the chevrons a rip writes around an off-screen voice, because these annotate exactly what
-the group annotates. Everything else that renders is retained: `-` and `・` still separate two
-speakers once the names are gone, a bracket still needs its other half, and a music marker is the
-music rule's to drop. Measured over the corpus, `≪` carries a closing `≫` on 0.4% of the lines it
-opens while `《`, `「` and `〈` carry theirs on 63–96%, which is what tells a marker from a pair.
-Only the marker's own characters go, never the override blocks around them.
-
-Two things follow from how the files are actually built, and each is load-bearing. Groups **nest**,
-so `（大谷敦士(おおたにあつし)）` needs a matcher, not a regex that stops at the first close. And a
-**doubled halfwidth delimiter is not a group at the top level** — the rips write `((…))` around a
-voice heard off screen, down a phone, or in memory, so what it wraps is speech and neither half is
-annotation: marker and line both stay. The convention is read off the corpus rather than off a
-published standard: it is conventionally credited to ARIB, but the public STD-B24 material does not
-name it, so what justifies passing it through is that its contents scan as speech wherever they
-appear here. The span closes within its cue about as often as it runs on
-into a later one, and both shapes have to behave identically, or the balanced form is deleted
-outright while the unbalanced form survives; passing the delimiter through is what satisfies that,
-since then neither shape is touched at all. Depth is what tells a marker from a close, not width:
-inside an open group the same pair is two nested closes, which is exactly what the provider that
-writes both labels and ruby halfwidth produces — `(大谷敦士(おおたにあつし))`, where the group must
-still strip. Only halfwidth doubles this way — `)）` is a nested ruby close and must still pair.
-
-A marker-only music cue such as `♪～` is dropped, while `♪ lyrics ♪`, unrelated symbols, bare
-punctuation and ALL-CAPS text stay. Override blocks are opaque — counting the parentheses inside
-`{\pos(320,240)}` would corrupt it — and SRT's `<i>` and its kin are markup on the same terms. Only
-a cue whose content changed is tidied, and within it only the lines that changed. If removing a line
-would strand a spanning tag, its markup is carried to the surviving text, so
-`<i>（信子）\Nおはよう</i>` becomes `<i>おはよう</i>`.
-
-SRT, ASS and SSA are parsed and serialized by `pysubs2`. A subtitle with nothing to strip is not
-saved and remains byte-for-byte untouched. Once a cue changes, `pysubs2` may normalize line endings,
-headers, timestamps, numbering, SRT timing-line extensions and unknown ASS sections; exact byte
-preservation is not part of the contract. `keep_html_tags` and `keep_ssa_tags` retain the markup
-needed by the classifier and nonstandard SRT override tags. A cue emptied by stripping is removed.
-
-**One cue changing reserializes the whole file, so normalization is not confined to what changed.**
-The SRT writer trims each cue and collapses its blank display lines, which reaches cues the strip
-never touched: a trailing ideographic space goes, and so does a leading empty line and whatever
-vertical placement it bought. Measured over the corpus this is the only difference from editing the
-text fields in place — 47 files, all SRT, and no cue's content differs anywhere in the 6,733.
-Tidying stays confined to the lines the strip changed because that is the strip's own decision; what
-the writer does to the rest of the file is not.
-
-ASS/SSA comments and drawings are retained but never classified. Because the SRT writer omits
-drawing events, an SRT containing one is left wholly untouched. A rewrite is also refused when a
-surviving timestamp falls outside the target format's representable range, rather than letting
-`pysubs2` clamp it. Parse or encoding failures are reported per file and leave the downloaded
-subtitle in place. UTF-8 is the default; byte-order marks select UTF-8, UTF-16 or UTF-32, and a
-rewrite writes back the mark its codec produces rather than the bytes that arrived. Python's bare
-`utf-16` and `utf-32` encoders always write little endian, so a big-endian file comes back little
-endian — correctly marked, and read back as what it was, but not the same bytes. Naming the
-endianness to preserve it costs a second decision about which mark to write; the corpus does not ask
-for one, carrying 5,802 UTF-8 marks, 14 little-endian UTF-16 and 917 files with no mark at all.
-WebVTT and `.sub` are not processed. Rewrites use a unique sibling temporary with the format
-extension, followed by atomic replacement.
-
 ## Logging and exit status
 
 **Download writes only to stderr.** Stdout is reserved for command payloads.
@@ -374,8 +248,8 @@ remain visible in quiet mode.
 
 | Verbosity | Output |
 |---|---|
-| `-q` / `--quiet` | Downloads, failures, basic strip results, and alignment start/result |
-| Default | All outcomes, strip cue counts, and available alignment offset/scale |
+| `-q` / `--quiet` | Downloads, failures, and alignment start/result |
+| Default | All outcomes and available alignment offset/scale |
 | `-v` / `--verbose` | Also Jimaku requests/statuses, ffsubsync logs, and caught-failure tracebacks |
 
 Both flags are booleans and belong to `download`. Combining quiet and verbose
@@ -388,14 +262,12 @@ counts and formatting. Diagnostic logging is enabled with a `verbose` boolean;
 there are no numeric reporting levels. Outcomes are plain strings:
 `download`, `skip`, `missing`, and `failed`. Summaries use the same visible outcomes as
 individual lines, preserving order and zero counts once anything visible happened.
-Counts describe operations: a saved subtitle with failed stripping and alignment counts
-as one download and two failures. Processing details never add outcome counts.
+Counts describe operations: a saved subtitle with failed alignment counts as one download
+and one failure. Processing details never add outcome counts.
 Any failed operation exits nonzero; skipped/missing files alone exit zero.
 For download, `error:` reports a fatal command error and `[failed]` a per-file failure. Search also
 uses `log_error` for recoverable parse/search misses; printing that diagnostic alone does not exit.
 
-`strip_ih` distinguishes changed, unchanged, unsupported, and drawing-containing SRTs
-left intact. Default and verbose output separate modified and removed cue counts.
 Alignment prints
 `ffsubsync: aligning…` before running and `complete` only after atomic installation.
 Default terminal runs with `--sync` use ffsubsync's own progress bar. Quiet, verbose,
@@ -423,14 +295,7 @@ release selection, and opt-in download execution.
 uses the native progress bar in terminals and suppresses it for cron/diagnostic output by
 temporarily replacing only `ffsubsync.speech_transformers.tqdm`. This private adapter is coupled
 to ffsubsync 0.5.1 and must be revisited on upgrades; its binding is restored even on failure.
-ffsubsync loads lazily under a guard against its import-time logging setup. `--strip-ih`
-runs before it, so ffsubsync aligns the stripped file. The cues stripping removes are the ones with
-no speech under them, so their intervals are noise in the correlation, and nothing that survives
-moves — measured against an embedded reference track, stripping first raises the share of cue time
-landing on reference speech by 0.7–1.5 points, and on ARIB rips it rewrites 20–30% of the signal
-ffsubsync sees, because their long `♬～` music cues carry a wave dash and so escape ffsubsync's own
-non-dialogue filter. Each step has its own error handling, so a failure in one still leaves the
-other's work in place. There is no
+ffsubsync loads lazily under a guard against its import-time logging setup. There is no
 `--dry-run`, no episode-number offset for absolute-vs-per-season numbering, no format conversion,
 and no structured output. Authentication and search preferences are environment-only.
 

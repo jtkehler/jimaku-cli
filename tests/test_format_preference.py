@@ -48,7 +48,7 @@ def download(tmp_path):
             [
                 "--id", "1", str(tmp_path),
                 "--no-all", "--no-rename", "--no-overwrite",
-                "--no-strip-ih", "--no-sync", *flags,
+                "--no-sync", *flags,
             ],
             obj=client,
             catch_exceptions=False,

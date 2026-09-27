@@ -30,7 +30,6 @@ DEFAULT_RENAME = False
 DEFAULT_OVERWRITE = False
 DEFAULT_SYNC = False
 DEFAULT_FFSUBSYNC_ARGS = ""
-DEFAULT_STRIP_IH = False
 DEFAULT_QUIET = False
 DEFAULT_VERBOSE = False
 
@@ -96,16 +95,6 @@ def download(
             ),
         ),
     ] = DEFAULT_FFSUBSYNC_ARGS,
-    strip_ih: Annotated[
-        bool,
-        typer.Option(
-            help=(
-                "Remove hearing-impaired annotations, and ruby readings written "
-                "as halfwidth-parenthesised kana after kanji or as HTML <ruby>. "
-                "Applies to .srt, .ass and .ssa; .vtt and .sub are left alone."
-            ),
-        ),
-    ] = DEFAULT_STRIP_IH,
     download_all: Annotated[
         bool,
         typer.Option(
@@ -212,26 +201,6 @@ def download(
                 "download", file.name, "downloaded", target=output_path.name
             )
 
-            # Before aligning, not after. ffsubsync correlates cue timings against
-            # the reference, and the cues this drops -- sound effects, music
-            # markers -- are the ones with no speech under them, so removing them
-            # sharpens the signal rather than costing it anchors. Nothing that
-            # survives moves, so no true anchor is lost either way.
-            if strip_ih:
-                try:
-                    strip_result = postprocess.strip_ih(output_path)
-                # Parse errors, unreadable encodings and the filesystem: report
-                # and move on rather than discard a subtitle that downloaded.
-                except Exception as e:
-                    reporter.record("failed", output_path.name, f"strip failed: {e}")
-                    logger.debug(
-                        "Stripping failed for %s", output_path.name, exc_info=True
-                    )
-                else:
-                    reporter.stripped(output_path.name, strip_result)
-
-            # Its own try, so a failed strip still gets aligned and a failed
-            # align still leaves the stripped subtitle in place.
             if sync:
                 reporter.step(output_path.name, "ffsubsync", "aligning…")
                 try:

@@ -3,15 +3,14 @@ import math
 import os
 import shlex
 import shutil
+import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from .strip_ih import strip_ih, temporary_path
-
-__all__ = ["AlignmentResult", "strip_ih", "sync_subtitle"]
+__all__ = ["AlignmentResult", "sync_subtitle"]
 
 
 @dataclass(frozen=True)
@@ -64,6 +63,18 @@ def _finite_number(value: object) -> float | None:
     ):
         return float(value)
     return None
+
+
+def temporary_path(subtitle: Path, marker: str) -> Path:
+    """Reserve a unique sibling temporary with the subtitle's format suffix."""
+    prefix = f".{marker.strip('.')}-"
+    with tempfile.NamedTemporaryFile(
+        dir=subtitle.parent,
+        prefix=prefix,
+        suffix=subtitle.suffix.casefold(),
+        delete=False,
+    ) as file:
+        return Path(file.name)
 
 
 def sync_subtitle(
