@@ -68,24 +68,26 @@ def fzf_input(monkeypatch: pytest.MonkeyPatch) -> None:
 class SearchClient:
     api_key = "fixture-key"
 
-    def __init__(self, listings: dict[int | None, list[FileEntry] | Exception]) -> None:
+    def __init__(self, listing: list[FileEntry] | Exception) -> None:
         self.entries: list[Entry] = [
             Entry(42, "Show", "2026-01-01T00:00:00Z", EntryFlags(anime=True))
         ]
-        self.listings = listings
+        self.listing = listing
         self.searched: list[tuple[str, bool]] = []
-        self.listed: list[tuple[int, int | None]] = []
+        self.listed: list[int] = []
 
     def search_entries(self, query: str, *, anime: bool) -> list[Entry]:
         self.searched.append((query, anime))
         return self.entries
 
-    def get_files(self, entry_id: int, episode: int | None = None) -> list[FileEntry]:
-        self.listed.append((entry_id, episode))
-        result = self.listings.get(episode, [])
-        if isinstance(result, Exception):
-            raise result
-        return result
+    def get_entry(self, entry_id: int) -> Entry:
+        return Entry(entry_id, "Show", "2026-01-01T00:00:00Z")
+
+    def get_files(self, entry_id: int) -> list[FileEntry]:
+        self.listed.append(entry_id)
+        if isinstance(self.listing, Exception):
+            raise self.listing
+        return self.listing
 
     def download_file(self, *_args: object) -> None:
         raise AssertionError("search must not download files")
@@ -103,7 +105,7 @@ def test_search_selects_an_entry_with_fzf(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     # Escaped names need no reverse lookup to identify the selected entry.
     client.entries = [
         Entry(42, "Show\n", "2026-01-01T00:00:00Z"),
@@ -129,7 +131,7 @@ def test_search_selects_an_entry_with_fzf(
     result = CliRunner().invoke(app, [str(tmp_path)], obj=client, input="")
 
     assert result.exit_code == 0, result.stderr
-    assert client.listed == [(99, 1)]
+    assert client.listed == [99]
     assert len(calls) == 2
     assert "--no-multi" in calls[0][1]
     assert "--multi" in calls[1][1]
@@ -143,11 +145,12 @@ def test_search_selects_an_entry_with_fzf(
 def test_search_selects_multiple_releases_in_mark_order(tmp_path: Path) -> None:
     for episode in (1, 2, 3):
         (tmp_path / f"Show - {episode:02}.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[Alpha] Show - 01.srt"), subtitle("[Beta] Show - 01.srt")],
-        2: [subtitle("[Beta] Show - 02.ass")],
-        3: [subtitle("[Gamma] Show - 03.srt")],
-    })
+    client = SearchClient([
+        subtitle("[Alpha] Show - 01.srt"),
+        subtitle("[Beta] Show - 01.srt"),
+        subtitle("[Beta] Show - 02.ass"),
+        subtitle("[Gamma] Show - 03.srt"),
+    ])
 
     result = CliRunner().invoke(
         app, [str(tmp_path)], obj=client, input="1\n2 1\n1\n"
@@ -157,17 +160,18 @@ def test_search_selects_multiple_releases_in_mark_order(tmp_path: Path) -> None:
     assert releases(shlex.split(result.stdout)) == ["Beta", "Alpha", "Gamma"]
     # Any selected release still covers an episode; no per-release completeness check.
     assert result.stderr.count("Subtitle release:") == 2
-    assert client.listed == [(42, 1), (42, 2), (42, 3)]
+    assert client.listed == [42]
     assert result.stdout.count("\n") == 1
 
 
 def test_esc_at_a_later_release_prompt_restarts_from_entry_selection(tmp_path: Path) -> None:
     for episode in (1, 2):
         (tmp_path / f"Show - {episode:02}.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[Alpha] Show - 01.srt"), subtitle("[Beta] Show - 01.srt")],
-        2: [subtitle("[Gamma] Show - 02.srt")],
-    })
+    client = SearchClient([
+        subtitle("[Alpha] Show - 01.srt"),
+        subtitle("[Beta] Show - 01.srt"),
+        subtitle("[Gamma] Show - 02.srt"),
+    ])
     client.entries.append(Entry(99, "Other Show", "2026-01-01T00:00:00Z"))
 
     result = CliRunner().invoke(
@@ -181,17 +185,17 @@ def test_esc_at_a_later_release_prompt_restarts_from_entry_selection(tmp_path: P
     # Alpha belonged to the abandoned entry; the new walk restarts at episode 1.
     assert releases(command) == ["Beta", "Gamma"]
     assert client.searched == [("Show", True)]
-    assert client.listed == [(42, 1), (42, 2), (99, 1), (99, 2)]
+    assert client.listed == [42, 99]
 
 
 def test_ctrl_x_finishes_with_earlier_releases(tmp_path: Path) -> None:
     for episode in (1, 2, 3):
         (tmp_path / f"Show - {episode:02}.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[Alpha] Show - 01.srt")],
-        2: [subtitle("[Beta] Show - 02.srt")],
-        3: [subtitle("[Beta] Show - 03.srt")],
-    })
+    client = SearchClient([
+        subtitle("[Alpha] Show - 01.srt"),
+        subtitle("[Beta] Show - 02.srt"),
+        subtitle("[Beta] Show - 03.srt"),
+    ])
 
     result = CliRunner().invoke(
         app, [str(tmp_path)], obj=client, input="1\n1\nctrl-x\n", catch_exceptions=False
@@ -200,7 +204,7 @@ def test_ctrl_x_finishes_with_earlier_releases(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.stderr
     assert releases(shlex.split(result.stdout)) == ["Alpha"]
     # Continuing the walk would prompt for episode 3 and abort on EOF.
-    assert client.listed == [(42, 1), (42, 2)]
+    assert client.listed == [42]
 
 
 @pytest.mark.parametrize("download_all", [False, True])
@@ -208,11 +212,11 @@ def test_multi_selection_deduplicates_releases_and_replays_download(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, download_all: bool
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [
+    client = SearchClient([
         subtitle("[Alpha] Show - 01.srt"),
         subtitle("[Beta] Show - 01.srt"),
         subtitle("[Alpha] Show - 01.ass"),
-    ]})
+    ])
     def make_client(**_kwargs: object) -> SearchClient:
         return client
 
@@ -244,11 +248,11 @@ def test_multi_selection_deduplicates_releases_and_replays_download(
 def test_search_accumulates_releases_in_episode_order(tmp_path):
     for episode in (10, 2, 1):
         (tmp_path / f"[Local] Show - {episode}.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[First] Show - 01.srt")],
-        2: [subtitle("[First] Show - 02.srt")],
-        10: [subtitle("[Second] Show - 10.ass")],
-    })
+    client = SearchClient([
+        subtitle("[First] Show - 01.srt"),
+        subtitle("[First] Show - 02.srt"),
+        subtitle("[Second] Show - 10.ass"),
+    ])
 
     result = CliRunner().invoke(
         app, [str(tmp_path)], obj=client, input="1\n1\n1\n", catch_exceptions=False
@@ -260,7 +264,7 @@ def test_search_accumulates_releases_in_episode_order(tmp_path):
     assert command[command.index("--id") + 1] == "42"
     assert releases(command) == ["First", "Second"]
     assert client.searched == [("Show", True)]
-    assert client.listed == [(42, 1), (42, 2), (42, 10)]
+    assert client.listed == [42]
     assert "[First] Show - 01.srt" in result.stderr
     assert "[Second] Show - 10.ass" in result.stderr
     assert result.stdout.count("\n") == 1
@@ -275,7 +279,7 @@ def test_search_uses_genre_specific_primary_title(
     tmp_path: Path, anime: bool, query: str
 ) -> None:
     (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
-    client = SearchClient({7: [subtitle("[Group] Wedding Impossible - 07.srt")]})
+    client = SearchClient([subtitle("[Group] Wedding Impossible - 07.srt")])
 
     result = CliRunner().invoke(
         app, [str(tmp_path), "--anime" if anime else "--no-anime"],
@@ -304,7 +308,7 @@ def test_search_retries_other_parser_after_empty_result(
     filename: str, anime: bool, episode: int, queries: list[str],
 ) -> None:
     (tmp_path / filename).touch()
-    client = SearchClient({episode: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle(f"[Group] Show - {episode:02}.srt")])
 
     def search_entries(query: str, *, anime: bool) -> list[Entry]:
         client.searched.append((query, anime))
@@ -328,7 +332,7 @@ def test_search_prompts_for_a_title_after_both_parsers_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, anime: bool
 ) -> None:
     (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
-    client = SearchClient({7: [subtitle("[Group] Wedding Impossible - 07.srt")]})
+    client = SearchClient([subtitle("[Group] Wedding Impossible - 07.srt")])
 
     def search_entries(query: str, *, anime: bool) -> list[Entry]:
         client.searched.append((query, anime))
@@ -366,7 +370,7 @@ def test_search_api_errors_stop_instead_of_trying_another_query(
     fail_at: int, error: Exception,
 ) -> None:
     (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
-    client = SearchClient({})
+    client = SearchClient([])
     queries = ["Wedding Impossible 2024", "Wedding Impossible", "Manual title"]
 
     def search_entries(query: str, *, anime: bool) -> list[Entry]:
@@ -392,7 +396,7 @@ def test_manual_retry_api_failure_emits_no_command_or_download(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({})
+    client = SearchClient([])
 
     def search_entries(query: str, *, anime: bool) -> list[Entry]:
         client.searched.append((query, anime))
@@ -418,7 +422,7 @@ def test_cancelling_manual_title_search_emits_nothing(
     tmp_path: Path, run_download: bool,
 ) -> None:
     (tmp_path / "Wedding.Impossible.2024.S01E07.1080p.WEB-DL.mkv").touch()
-    client = SearchClient({})
+    client = SearchClient([])
     client.entries = []
 
     result = CliRunner().invoke(
@@ -440,7 +444,7 @@ def test_search_uses_guessit_when_anitopy_has_no_title(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "[Local] Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     # Exercise a missing Anitopy title while leaving GuessIt and the CLI real.
     monkeypatch.setattr("jimaku_cli.search.anitopy.parse", lambda name: {"episode_number": "01"})
 
@@ -460,7 +464,7 @@ def test_search_rejects_unusable_titles_before_api_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, title: object
 ) -> None:
     (tmp_path / "S01E01.mkv").touch()
-    client = SearchClient({})
+    client = SearchClient([])
     monkeypatch.setattr("jimaku_cli.search.anitopy.parse", lambda name: {"anime_title": title})
 
     result = CliRunner().invoke(app, [str(tmp_path)], obj=client)
@@ -476,7 +480,7 @@ def test_search_recovers_with_manual_title_when_parsing_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, title: object
 ) -> None:
     (tmp_path / "S01E01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     monkeypatch.setattr(
         "jimaku_cli.search.anitopy.parse", lambda name: {"anime_title": title}
     )
@@ -488,7 +492,7 @@ def test_search_recovers_with_manual_title_when_parsing_fails(
 
     assert result.exit_code == 0, result.stderr
     assert client.searched == [("Show", True)]
-    assert client.listed == [(42, 1)]
+    assert client.listed == [42]
     assert "Search title:" in result.stderr
     assert result.stdout.startswith("jimaku download ")
     assert result.stdout.count("\n") == 1
@@ -499,7 +503,7 @@ def test_empty_results_suggest_live_action_only_for_anime_search(
     tmp_path: Path, anime: bool
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({})
+    client = SearchClient([])
     client.entries = []
 
     result = CliRunner().invoke(
@@ -518,7 +522,7 @@ def test_unknown_release_becomes_an_episode_independent_regex(tmp_path):
         (tmp_path / f"Show - {episode:02}.mkv").touch()
     first = subtitle("Show - 01 (CR 1920x1080 x264 AAC).srt")
     second = subtitle("Show - 02 (CR 1920x1080 x264 AAC).ass")
-    client = SearchClient({1: [first], 2: [second]})
+    client = SearchClient([first, second])
 
     result = CliRunner().invoke(
         app, [str(tmp_path)], obj=client, input="1\n1\n"
@@ -595,10 +599,10 @@ def test_search_passes_handling_options_to_the_emitted_command(tmp_path, enabled
     directory = tmp_path / "Jack's 日本語 $(not-a-command)"
     directory.mkdir()
     (directory / "Show - 01.mkv").touch()
-    client = SearchClient({1: [
+    client = SearchClient([
         subtitle("[SrtGroup] Show - 01.srt"),
         subtitle("[AssGroup] Show - 01.ass"),
-    ]})
+    ])
     client.entries.append(Entry(99, "Other Show", "2026-01-01T00:00:00Z"))
     switches = ["all", "rename", "overwrite", "sync"]
     flags = [f"--{'' if enabled else 'no-'}{name}" for name in switches]
@@ -619,13 +623,13 @@ def test_search_passes_handling_options_to_the_emitted_command(tmp_path, enabled
         assert f"--no-{name}" not in command
     assert "--no-anime" not in command
     assert client.searched == [("Show", False)]
-    assert client.listed == [(99, 1)]
+    assert client.listed == [99]
 
 
 @pytest.mark.parametrize("case", ["missing", "file", "empty", "no-entries"])
 def test_unusable_search_input_reports_an_error_without_a_command(tmp_path, case):
     directory = tmp_path / "videos"
-    client = SearchClient({})
+    client = SearchClient([])
     if case == "file":
         directory.touch()
     elif case != "missing":
@@ -654,17 +658,17 @@ def test_unusable_search_input_reports_an_error_without_a_command(tmp_path, case
 def test_missing_subtitles_are_reported_without_prompting(tmp_path, empty_only):
     (tmp_path / "Show - 01.mkv").touch()
     (tmp_path / "Show - 02.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("Show - 01.zip")],
-        2: [] if empty_only else [subtitle("[Group] Show - 02.srt")],
-    })
+    client = SearchClient([
+        subtitle("Show - 01.zip"),
+        *([] if empty_only else [subtitle("[Group] Show - 02.srt")]),
+    ])
 
     result = CliRunner().invoke(
         app, [str(tmp_path)], obj=client, input="1\n1\n", catch_exceptions=False
     )
 
     assert "error: Show - 01.mkv: no subtitles available" in result.stderr
-    assert client.listed == [(42, 1), (42, 2)]
+    assert client.listed == [42]
     assert "Show - 01.zip" not in result.stderr
     if empty_only:
         assert result.exit_code == 1
@@ -677,24 +681,17 @@ def test_missing_subtitles_are_reported_without_prompting(tmp_path, empty_only):
 
 
 @pytest.mark.parametrize("error", [JimakuError(429, "retry later"), requests.Timeout("timeout")])
-def test_listing_failure_continues_but_never_emits_a_partial_command(tmp_path, error):
-    for episode in (1, 2, 3):
-        (tmp_path / f"Show - {episode:02}.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[First] Show - 01.srt")],
-        2: error,
-        3: [subtitle("[Second] Show - 03.srt")],
-    })
+def test_listing_failure_exits_before_any_prompt(tmp_path, error):
+    (tmp_path / "Show - 01.mkv").touch()
+    client = SearchClient(error)
 
-    result = CliRunner().invoke(
-        app, [str(tmp_path)], obj=client, input="1\n1\n1\n"
-    )
+    result = CliRunner().invoke(app, [str(tmp_path)], obj=client, input="1\n")
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert str(error) in result.stderr
-    assert "Show - 02.mkv" in result.stderr
-    assert client.listed == [(42, 1), (42, 2), (42, 3)]
+    assert f"could not retrieve files for entry 42: {error}" in result.stderr
+    assert "Subtitle release:" not in result.stderr
+    assert client.listed == [42]
 
 
 def test_directory_read_failure_is_reported_on_stderr(tmp_path, monkeypatch):
@@ -702,7 +699,7 @@ def test_directory_read_failure_is_reported_on_stderr(tmp_path, monkeypatch):
         raise PermissionError("directory read denied")
 
     monkeypatch.setattr(Path, "iterdir", unreadable)
-    client = SearchClient({})
+    client = SearchClient([])
     result = CliRunner().invoke(app, [str(tmp_path)], obj=client)
 
     assert result.exit_code == 1
@@ -713,26 +710,26 @@ def test_directory_read_failure_is_reported_on_stderr(tmp_path, monkeypatch):
 
 def test_unreadable_episode_is_not_treated_as_a_movie(tmp_path):
     (tmp_path / "Show.S01.mkv").touch()
-    client = SearchClient({None: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
 
     result = CliRunner().invoke(app, [str(tmp_path)], obj=client, input="1\n1\n")
 
     assert result.exit_code == 1
     assert result.stdout == ""
     assert "could not determine an episode number" in result.stderr
-    assert client.listed == []
+    assert client.listed == [42]
 
 
 def test_movie_search_defaults_to_current_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "A Silent Voice.MKV").touch()
-    client = SearchClient({None: [subtitle("A Silent Voice.srt")]})
+    client = SearchClient([subtitle("A Silent Voice.srt")])
 
     result = CliRunner().invoke(app, [], obj=client, input="1\n1\n", catch_exceptions=False)
 
     assert result.exit_code == 0, result.stderr
     assert client.searched == [("A Silent Voice", True)]
-    assert client.listed == [(42, None)]
+    assert client.listed == [42]
     assert shlex.split(result.stdout)[2] == str(tmp_path.resolve())
     [pattern] = releases(shlex.split(result.stdout))
     assert match(pattern, "A Silent Voice.srt")
@@ -741,16 +738,16 @@ def test_movie_search_defaults_to_current_directory(tmp_path, monkeypatch):
 def test_numberless_videos_follow_numbered_episodes(tmp_path):
     for name in ("A Movie.mkv", "Show - 01.mkv", "Z Movie.mkv"):
         (tmp_path / name).touch()
-    client = SearchClient({
-        1: [subtitle("[Group] Show - 01.srt")],
-        None: [subtitle("[Group] Movie.srt")],
-    })
+    client = SearchClient([
+        subtitle("[Group] Show - 01.srt"),
+        subtitle("[Group] Movie.srt"),
+    ])
 
     result = CliRunner().invoke(app, [str(tmp_path)], obj=client, input="1\n1\n")
 
     assert result.exit_code == 0, result.stderr
     assert client.searched == [("Show", True)]
-    assert client.listed == [(42, 1), (42, None), (42, None)]
+    assert client.listed == [42]
 
 
 @pytest.mark.parametrize("answers", ["", "1\n", "1\n1\n"])
@@ -760,10 +757,10 @@ def test_cancelled_search_leaves_stdout_empty(
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
     (tmp_path / "Show - 02.mkv").touch()
-    client = SearchClient({
-        1: [subtitle("[First] Show - 01.srt")],
-        2: [subtitle("[Second] Show - 02.srt")],
-    })
+    client = SearchClient([
+        subtitle("[First] Show - 01.srt"),
+        subtitle("[Second] Show - 02.srt"),
+    ])
 
     result = CliRunner().invoke(app, [str(tmp_path), *flags], obj=client, input=answers)
 
@@ -821,7 +818,7 @@ def test_fzf_launch_failure_is_reported_without_a_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
 
     def unavailable(*_args: object, **_kwargs: object) -> str:
         raise FileNotFoundError("fzf executable missing")
@@ -840,7 +837,7 @@ def test_unsuccessful_fzf_selection_aborts_without_a_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: bytes
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     def no_match(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(args, returncode, stdout=stdout)
 
@@ -859,10 +856,10 @@ def test_search_resolves_environment_preferences_on_each_invocation(
 ) -> None:
     video = tmp_path / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [
+    client = SearchClient([
         subtitle("[SrtGroup] Show - 01.srt"),
         subtitle("[AssGroup] Show - 01.ass"),
-    ]})
+    ])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     preferences = {
@@ -891,7 +888,7 @@ def test_search_resolves_environment_preferences_on_each_invocation(
         *(f"--{name}" for name in switches),
     ]
     assert client.searched == [("Show", False)]
-    assert client.listed == [(42, 1)]
+    assert client.listed == [42]
     assert list(tmp_path.iterdir()) == [video]
 
     overridden = runner.invoke(
@@ -904,7 +901,7 @@ def test_search_resolves_environment_preferences_on_each_invocation(
     assert overridden.exit_code == 0, overridden.stderr
     assert shlex.split(overridden.stdout) == [*base, "--release", "SrtGroup"]
     assert client.searched == [("Show", False), ("Show", True)]
-    assert client.listed == [(42, 1), (42, 1)]
+    assert client.listed == [42, 42]
     assert list(tmp_path.iterdir()) == [video]
 
     for name in preferences:
@@ -917,7 +914,7 @@ def test_search_resolves_environment_preferences_on_each_invocation(
     assert defaults.exit_code == 0, defaults.stderr
     assert shlex.split(defaults.stdout) == [*base, "--release", "SrtGroup"]
     assert client.searched == [("Show", False), ("Show", True), ("Show", True)]
-    assert client.listed == [(42, 1), (42, 1), (42, 1)]
+    assert client.listed == [42, 42, 42]
     assert list(tmp_path.iterdir()) == [video]
 
 
@@ -926,10 +923,10 @@ def test_search_environment_and_cli_use_native_last_occurrence_precedence(
 ) -> None:
     video = tmp_path / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [
+    client = SearchClient([
         subtitle("[SrtGroup] Show - 01.srt"),
         subtitle("[AssGroup] Show - 01.ass"),
-    ]})
+    ])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
@@ -964,7 +961,7 @@ def test_invalid_search_environment_is_rejected_before_work(
 ) -> None:
     video = tmp_path / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     monkeypatch.setenv(envvar, value)
@@ -986,7 +983,7 @@ def test_cli_options_override_invalid_search_environment(
 ) -> None:
     video = tmp_path / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "invalid")
@@ -1007,7 +1004,7 @@ def test_cli_options_override_invalid_search_environment(
 
 @pytest.mark.parametrize("flags", [["--release", "Group"], ["--prefer-format", "zip"]])
 def test_invalid_options_are_rejected_before_searching(tmp_path, flags):
-    client = SearchClient({})
+    client = SearchClient([])
 
     result = CliRunner().invoke(app, [str(tmp_path), *flags], obj=client)
 
@@ -1017,11 +1014,11 @@ def test_invalid_options_are_rejected_before_searching(tmp_path, flags):
 
 
 def test_api_labels_cannot_inject_terminal_control_characters(tmp_path):
-    (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [
+    (tmp_path / "Show.mkv").touch()
+    client = SearchClient([
         subtitle("[Group] Show - 01.srt"),
         subtitle("evil\n\x1b[31m.srt"),
-    ]})
+    ])
     client.entries = [Entry(42, "Show\n\x1b[31m", "2026-01-01T00:00:00Z")]
 
     result = CliRunner().invoke(app, [str(tmp_path)], obj=client, input="1\n1\n")
@@ -1037,7 +1034,7 @@ def test_emitted_command_preserves_ansi_directory(tmp_path):
     directory = tmp_path / "Show\x1b[31m"
     directory.mkdir()
     (directory / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     client.entries = [Entry(42, directory.name, "2026-01-01T00:00:00Z")]
 
     result = CliRunner().invoke(
@@ -1058,10 +1055,10 @@ def test_emitted_command_runs_through_the_real_download_command(
     directory.mkdir()
     video = directory / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [
+    client = SearchClient([
         subtitle("[Group] Show - 01.ass"),
         subtitle("[Group] Show - 01.srt"),
-    ]})
+    ])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setenv("JIMAKU_SEARCH_RENAME", "true")
     monkeypatch.setenv("JIMAKU_SEARCH_PREFER_FORMAT", "ass")
@@ -1092,7 +1089,7 @@ def test_emitted_command_runs_through_the_real_download_command(
     assert saved.read_bytes() == b"subtitle"
     assert set(directory.iterdir()) == {video, saved}
     assert list(replay_directory.iterdir()) == []
-    assert client.listed == [(42, 1), (42, 1)]
+    assert client.listed == [42, 42]
 
 
 def test_unparsed_release_command_replay_preserves_codec(tmp_path, monkeypatch):
@@ -1101,7 +1098,7 @@ def test_unparsed_release_command_replay_preserves_codec(tmp_path, monkeypatch):
     first = subtitle("Show - 264 (CR 1920x1080 x264 AAC).srt")
     second = subtitle("Show - 265 (CR 1920x1080 x264 AAC).ass")
     wrong_codec = subtitle("Show - 265 (CR 1920x1080 x265 AAC).srt")
-    client = SearchClient({264: [first], 265: [wrong_codec, second]})
+    client = SearchClient([first, wrong_codec, second])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     runner = CliRunner()
@@ -1128,14 +1125,14 @@ def test_unparsed_release_command_replay_preserves_codec(tmp_path, monkeypatch):
     assert (tmp_path / first.name).read_bytes() == b"subtitle"
     assert not (tmp_path / wrong_codec.name).exists()
     assert (tmp_path / second.name).read_bytes() == b"subtitle"
-    assert client.listed == [(42, 264), (42, 265), (42, 264), (42, 265)]
+    assert client.listed == [42, 42]
 
 
 def test_versioned_release_command_replay_preserves_dotted_codec(tmp_path, monkeypatch):
     (tmp_path / "Show - 264v2.mkv").touch()
     selected = subtitle("Show - 264v2 (CR 1920x1080 h.264 AAC).ass")
     wrong_codec = subtitle("Show - 264v2 (CR 1920x1080 h.265 AAC).srt")
-    client = SearchClient({264: [selected, wrong_codec]})
+    client = SearchClient([selected, wrong_codec])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     runner = CliRunner()
@@ -1160,7 +1157,7 @@ def test_versioned_release_command_replay_preserves_dotted_codec(tmp_path, monke
     assert download.stdout == ""
     assert not (tmp_path / wrong_codec.name).exists()
     assert (tmp_path / selected.name).read_bytes() == b"subtitle"
-    assert client.listed == [(42, 264), (42, 264)]
+    assert client.listed == [42, 42]
 
 
 @pytest.mark.parametrize(
@@ -1171,7 +1168,7 @@ def test_search_can_download_after_selecting_releases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], env_download: str
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     monkeypatch.setenv("JIMAKU_SEARCH_DOWNLOAD", env_download)
 
     def save_subtitle(_url: str, destination: Path) -> None:
@@ -1186,7 +1183,7 @@ def test_search_can_download_after_selecting_releases(
 
     assert result.exit_code == 0, result.stderr
     assert (tmp_path / "[Group] Show - 01.srt").read_bytes() == b"fixture subtitle"
-    assert client.listed == [(42, 1), (42, 1)]
+    assert client.listed == [42, 42]
     command = shlex.split(result.stdout)
     assert command[:3] == ["jimaku", "download", str(tmp_path.resolve())]
     assert releases(command) == ["Group"]
@@ -1201,7 +1198,7 @@ def test_search_download_opt_out_only_emits_the_command(
 ) -> None:
     video = tmp_path / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
 
     result = CliRunner().invoke(
         app, [str(tmp_path), *flags], obj=client, input="1\n1\n", catch_exceptions=False
@@ -1209,7 +1206,7 @@ def test_search_download_opt_out_only_emits_the_command(
 
     assert result.exit_code == 0, result.stderr
     assert list(tmp_path.iterdir()) == [video]
-    assert client.listed == [(42, 1)]
+    assert client.listed == [42]
     assert result.stdout.startswith("jimaku download ")
     assert result.stdout.count("\n") == 1
     assert "[download]" not in result.stderr
@@ -1220,7 +1217,7 @@ def test_search_propagates_download_failure(
 ) -> None:
     video = tmp_path / "Show - 01.mkv"
     video.touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
 
     def fail_transfer(_url: str, _destination: Path) -> None:
         raise requests.ConnectionError("fixture transfer failed")
@@ -1244,7 +1241,7 @@ def test_search_command_and_direct_download_forward_the_same_ffsubsync_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argument_source: str
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     monkeypatch.setattr(client, "download_file", lambda url, dest: dest.write_bytes(b"subtitle"))
@@ -1305,7 +1302,7 @@ def test_ffsubsync_args_are_omitted_when_blank_or_not_syncing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: list[str]
 ) -> None:
     (tmp_path / "Show - 01.mkv").touch()
-    client = SearchClient({1: [subtitle("[Group] Show - 01.srt")]})
+    client = SearchClient([subtitle("[Group] Show - 01.srt")])
     monkeypatch.setenv("JIMAKU_SEARCH_FFSUBSYNC_ARGS", "--no-fix-framerate")
 
     result = CliRunner().invoke(

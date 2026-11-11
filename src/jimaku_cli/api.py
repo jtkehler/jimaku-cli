@@ -122,6 +122,11 @@ class JimakuError(Exception):
         self.code = code
 
 
+# Expected network, API, and filesystem failures. Caught per file so one bad
+# transfer does not abort the rest of a batch run.
+TRANSFER_ERRORS = (JimakuError, requests.RequestException, OSError)
+
+
 class JimakuClient:
     def __init__(self, api_key: str, timeout: float = 10.0) -> None:
         self.api_key = api_key
@@ -134,17 +139,15 @@ class JimakuClient:
         """`GET /api/entries/{id}`: the entry with this ID."""
         return Entry.from_json(self._get(f"/api/entries/{entry_id}"))
 
-    def get_files(self, entry_id: int, episode: int | None = None) -> list[FileEntry]:
-        """`GET /api/entries/{id}/files`: the files under an entry.
+    def get_files(self, entry_id: int) -> list[FileEntry]:
+        """`GET /api/entries/{id}/files`: every file under an entry.
 
-        `episode` filters server-side, but only as a best-effort guess from the remote
-        filenames, and it is ignored outright for entries flagged as movies.
+        The API's `episode` filter is unused because `parser.Listing` reads every
+        file's episodes from this single request.
         """
         return [
             FileEntry.from_json(item)
-            for item in self._get(
-                f"/api/entries/{entry_id}/files", {"episode": episode}
-            )
+            for item in self._get(f"/api/entries/{entry_id}/files")
         ]
 
     def search_entries(
@@ -182,6 +185,21 @@ class JimakuClient:
                 },
             )
         ]
+
+    def get_anime_relations_hash(self) -> str:
+        """`GET /anime-relations/date`: the content hash of jimaku's anime relations.
+
+        Served outside `/api`. Its `created_at` is when the server last loaded the
+        relations, so only the hash identifies their content.
+        """
+        return self._get("/anime-relations/date")["hash"]
+
+    def get_anime_relations(self) -> dict[str, Any]:
+        """`GET /anime-relations`: every relation rule, keyed by source AniList ID.
+
+        Decoded JSON, `hash` included, so the caller can cache it verbatim.
+        """
+        return self._get("/anime-relations")
 
     def download_file(self, url: str, dest: Path) -> None:
         """Fetch a file entry's URL to `dest`, atomically.

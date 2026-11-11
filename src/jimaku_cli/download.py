@@ -3,20 +3,14 @@ import re
 from pathlib import Path
 from typing import Annotated, Literal
 
-import anitopy
-import guessit
-import requests
 import typer
 
 from . import postprocess
-from .api import FileEntry, JimakuClient, JimakuError
+from .api import TRANSFER_ERRORS, FileEntry, JimakuClient
 from .output import Reporter, diagnostic_session, log_error
+from .parser import Listing, is_episode_type, parse_episode, parse_release
 
 logger = logging.getLogger(__name__)
-
-# Expected network, API, and filesystem failures. Caught per file so one bad
-# transfer does not abort the rest of a batch run.
-TRANSFER_ERRORS = (JimakuError, requests.RequestException, OSError)
 
 VIDEO_EXTS = frozenset({".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts", ".ogm"})
 SUBTITLE_EXTS = frozenset({".srt", ".ass", ".ssa", ".vtt", ".sub"})
@@ -137,25 +131,21 @@ def download(
         log_error(f"no video files in {directory}")
         raise typer.Exit(1)
 
+    try:
+        listing = Listing.fetch(client, client.get_entry(entry_id))
+    except TRANSFER_ERRORS as e:
+        log_error(f"could not retrieve files for entry {entry_id}: {e}")
+        logger.debug("Listing failed for entry %s", entry_id, exc_info=True)
+        raise typer.Exit(1) from e
+
     for video in videos:
         episode = parse_episode(video.name)
-        if episode is None and guessit.guessit(video).get("type") == "episode":
+        if episode is None and is_episode_type(video.name):
             reporter.record(
                 "failed", video.name, "could not determine an episode number"
             )
             continue
-        try:
-            remote_files = client.get_files(entry_id, episode)
-        except TRANSFER_ERRORS as e:
-            reporter.record(
-                "failed",
-                video.name,
-                f"could not retrieve files for episode {episode}: {e}",
-            )
-            logger.debug("Listing failed for %s", video.name, exc_info=True)
-            continue
-
-        filtered = filter_release(remote_files, release, prefer_format)
+        filtered = filter_release(listing.for_episode(episode), release, prefer_format)
         to_download = filtered if download_all else filtered[:1]
 
         if not to_download:
@@ -225,44 +215,6 @@ def download(
 
     reporter.print_summary()
     raise typer.Exit(reporter.exit_code)
-
-
-def parse_episode(filename: str) -> int | None:
-    """Parse a single numeric episode with anitopy, falling back to guessit.
-
-    anitopy extracts episode number in some cases where guessit won't,
-    it also runs faster and is the same library that Jimaku uses.
-    """
-    parsed = anitopy.parse(filename)
-    if parsed is not None:
-        episode = parsed.get("episode_number")
-        if isinstance(episode, str) and episode.isdecimal():
-            return int(episode)
-
-    episode = guessit.guessit(filename).get("episode")
-    if isinstance(episode, int):
-        return episode
-    return None
-
-
-def parse_release(filename: str) -> str | None:
-    """The release group, falling back to the streaming service.
-
-    guessit files a name like "Netflix" under either key depending on the rest of
-    the filename, so the first key that resolves to a name wins.
-    """
-    # TODO: A disposition flag can win the release_group key. guessit reads
-    # `Show.S01E01.1080p.AMZN.WEB-DL.ja[sdh].srt` as release_group "sdh", burying
-    # streaming_service "Amazon Prime" -- so `--release Amazon` matches nothing, and
-    # --rename writes `stem.sdh.ja.srt`, the mislabeled-track collision. Skipping
-    # `sdh`/`cc`/`hi`/`forced` here needs the label slugged too, or "Amazon Prime"
-    # puts a space in the filename.
-    guessit_out = guessit.guessit(filename)
-    for key in ["release_group", "streaming_service"]:
-        release = guessit_out.get(key)
-        if isinstance(release, str):
-            return release
-    return None
 
 
 def match(pattern: str, filename: str) -> bool:

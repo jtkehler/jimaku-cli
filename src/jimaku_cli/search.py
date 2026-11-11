@@ -14,7 +14,7 @@ import guessit
 import typer
 from iterfzf import BUNDLED_EXECUTABLE
 
-from .api import Entry, JimakuClient
+from .api import TRANSFER_ERRORS, Entry, JimakuClient
 from .colorscheme import FZF_COLORS
 from .download import (
     DEFAULT_DOWNLOAD_ALL,
@@ -25,14 +25,12 @@ from .download import (
     DEFAULT_RENAME,
     DEFAULT_SYNC,
     DEFAULT_VERBOSE,
-    TRANSFER_ERRORS,
     VIDEO_EXTS,
     download,
     filter_release,
-    parse_episode,
-    parse_release,
 )
 from .output import inline, log_error
+from .parser import Listing, is_episode_type, parse_episode, parse_release
 
 app = typer.Typer()
 
@@ -157,7 +155,12 @@ def search(
             continue
         [entry_index] = selected
         entry = entries[entry_index]
-        releases = choose_releases(client, entry.id, videos, prefer_format)
+        try:
+            listing = Listing.fetch(client, entry)
+        except TRANSFER_ERRORS as exc:
+            log_error(f"could not retrieve files for entry {entry.id}: {exc}")
+            raise typer.Exit(1) from exc
+        releases = choose_releases(listing, videos, prefer_format)
         if releases is not None:
             break
 
@@ -221,8 +224,7 @@ def find_entries(client: JimakuClient, queries: list[str], *, anime: bool) -> li
 
 
 def choose_releases(
-    client: JimakuClient,
-    entry_id: int,
+    listing: Listing,
     videos: list[tuple[Path, int | None]],
     prefer_format: str,
 ) -> list[str] | None:
@@ -230,16 +232,11 @@ def choose_releases(
     releases: list[str] = []
     failed = False
     for video, episode in videos:
-        if episode is None and guessit.guessit(video.name).get("type") == "episode":
+        if episode is None and is_episode_type(video.name):
             log_error(f"{video.name}: could not determine an episode number")
             failed = True
             continue
-        try:
-            files = client.get_files(entry_id, episode)
-        except TRANSFER_ERRORS as exc:
-            log_error(f"{video.name}: could not retrieve subtitles: {exc}")
-            failed = True
-            continue
+        files = listing.for_episode(episode)
         if releases and filter_release(files, releases, prefer_format):
             continue
         candidates = filter_release(files, [], prefer_format)

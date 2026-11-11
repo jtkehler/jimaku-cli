@@ -85,18 +85,23 @@ def child_main(mode: str, directory: str) -> None:
                 return [entries[1] if query == "葬送のフリーレン" else entries[0]]
             return entries
 
-        def get_files(self, entry_id: int, episode: int | None = None) -> list[FileEntry]:
-            assert episode is not None
-            print(f"[fixture API] get_files {entry_id} {episode}", file=sys.stderr)
-            groups = ("Alpha", "Beta", "Gamma") if episode == 1 else ("Delta",)
+        def get_files(self, entry_id: int) -> list[FileEntry]:
+            print(f"[fixture API] get_files {entry_id}", file=sys.stderr)
+            names = (
+                "[Alpha] Show - 01.srt",
+                "[Beta] Show - 01.srt",
+                "[Gamma] Show - 01.srt",
+                "[Delta] Show - 02.srt",
+                "[Delta] Show - 07.srt",
+            )
             return [
                 FileEntry(
                     "https://fixture.invalid/not-a-download",
-                    f"[{group}] Show - {episode:02}.srt",
+                    name,
                     1,
                     "2026-01-01T00:00:00Z",
                 )
-                for group in groups
+                for name in names
             ]
 
         def download_file(self, *_args: object, **_kwargs: object) -> None:
@@ -437,7 +442,7 @@ def test_search_fixture_api_emits_only_complete_command_in_mark_order(
         assert session.stdout.endswith(b"\n") and session.stdout.count(b"\n") == 1
         assert shlex.split(session.stdout.decode()) == expected
         assert session.terminal.count(FZF_STARTED) == 2
-        assert b"[fixture API] get_files 99 1" in session.terminal
+        assert b"[fixture API] get_files 99" in session.terminal
         assert b"Entry:" in session.terminal
         assert b"Subtitle release:" in session.terminal
         assert list(child_command.videos.iterdir()) == [child_command.videos / "Show - 01.mkv"]
@@ -498,7 +503,7 @@ def test_search_ctrl_r_retries_manual_queries_with_and_without_local_matches(
                 "葬送のフリーレン",
             )
         ]
-        assert b"[fixture API] get_files 99 7" in session.terminal
+        assert b"[fixture API] get_files 99" in session.terminal
 
 
 def test_search_esc_returns_from_release_selection_to_entries(
@@ -534,8 +539,8 @@ def test_search_esc_returns_from_release_selection_to_entries(
         assert session.terminal.count(FZF_STARTED) == 4
         assert re.findall(r"\[fixture API\] [^\r\n]+", session.terminal.decode()) == [
             "[fixture API] search_entries 'Show' anime=True",
-            "[fixture API] get_files 42 1",
-            "[fixture API] get_files 99 1",
+            "[fixture API] get_files 42",
+            "[fixture API] get_files 99",
         ]
 
 
@@ -592,7 +597,7 @@ def test_search_fixture_api_cancellation_has_no_partial_command(
                 # A release has already been accepted for an earlier episode.
                 _ = session.send(b"\r")
                 session.wait_for("1/1")
-                assert b"[fixture API] get_files 99 2" in session.terminal
+                assert b"[fixture API] get_files 99" in session.terminal
             else:
                 offset = session.send(b"\x15")
                 session.wait_for("3/3", after=offset)

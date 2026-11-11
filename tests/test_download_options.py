@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from jimaku_cli.api import FileEntry
+from jimaku_cli.api import Entry, FileEntry
 from jimaku_cli.download import app
 
 
@@ -21,7 +21,10 @@ class DownloadClient:
         )
         self.downloaded: list[Path] = []
 
-    def get_files(self, entry_id, episode=None):
+    def get_entry(self, entry_id):
+        return Entry(entry_id, "Show", "2026-01-01T00:00:00Z")
+
+    def get_files(self, entry_id):
         return [self.file]
 
     def download_file(self, url, dest):

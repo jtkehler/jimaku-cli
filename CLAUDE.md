@@ -19,9 +19,9 @@ The root command and both subcommands accept `--help` / `-h`.
 ### `jimaku download [DIRECTORY]`
 
 The core command. Walks the video files in a directory (default `.`), determines each one's
-episode number, asks the entry for that episode's files, picks the subtitles matching the
-requested release, and writes them alongside the video. Episodes that already have a subtitle are
-left alone. Non-interactive and safe to re-run.
+episode number, matches it against the entry's file listing (fetched once per run), picks the
+subtitles matching the requested release, and writes them alongside the video. Episodes that
+already have a subtitle are left alone. Non-interactive and safe to re-run.
 
 | Flag | Behavior |
 |---|---|
@@ -48,7 +48,8 @@ A session:
    breaking ties.
 2. Search entries using the first video's parsed title; prompt to choose an entry or press Ctrl-R
    to search again with a manual query.
-3. List that episode's files; use fzf to choose one or more, marking in priority order.
+3. Fetch the chosen entry's listing once, list that episode's files, and use fzf to choose one or
+   more, marking in priority order.
 4. Record the chosen files' releases in mark order, deduplicating patterns without reordering and
    falling back to a regex synthesized from the filename when the release can't be parsed.
 5. Advance through the remaining episodes, testing each against the patterns so far. At the first
@@ -179,16 +180,29 @@ separately in cron's execution environment and keep them private.
 
 **Every video is considered; the episode number orders and filters, it doesn't gate.** The
 directory's videos are sorted by episode number and all of them stay in the list, including files
-that have none. A file with no episode number has its listing requested unfiltered, which is what
+that have none. A file with no episode number receives the entry's whole listing, which is what
 makes a movie directory work. A file that clearly is an episode but whose number can't be read is
 the error case: report it and continue. Non-integer episodes (`03.5`, `SP01`, OVA, NCOP) aren't
-parsed as episode numbers, so they take the numberless path too.
+parsed as episode numbers, so they take the numberless path too. Both commands classify a video by
+its filename alone, through `parser.py`: GuessIt also reads directories, and a parent such as
+`Season 1` would turn a movie into an episode with an unreadable number.
 
 Numberless files need a defined position in that sort rather than an incidental one, because
 `search` reads the first item in the list to derive its search title and its first prompt.
 
-The server's episode filter is itself a best-effort guess from remote filenames, and is ignored
-outright for entries flagged as movies.
+**Episodes are matched client-side, from one listing.** jimaku's `/api` is rate limited (25
+requests per 60 s), so a run requests each entry's listing once (download also fetches the entry)
+and never uses the server's `?episode=` filter. `parser.Listing` reads each remote filename's
+episode range the way that filter does: Anitopy's episode, with GuessIt only when Anitopy finds
+none. Files without an episode reach only numberless videos, and movie entries skip matching. The
+reading is still a best-effort guess from remote filenames.
+
+Absolute and per-season numbering meet through jimaku's anime-relations rules, applied to both
+the video's number and each file's range, so a local `- 13` matches a remote `S02E01` and the
+reverse. Unlike the server, only rules that stay within the entry's own AniList ID apply. The
+relations document is cached as `anime-relations.json` in `typer.get_app_dir("jimaku-cli")` and
+revalidated by content hash on every run. When jimaku is unreachable the cached copy is used;
+without one, the listing fails. A failed cache write never fails a run.
 
 **Release matching is a priority list, not a filter.** Patterns are tried in the order given and
 the first that matches wins; with `--all`, every match is kept, ordered by pattern priority and
@@ -201,7 +215,7 @@ subtitles. `--all` keeps nonpreferred formats too.
 **`search` and `download` must decide identically.** The wizard's fast-forward asks the same
 question `download` asks — does any file for this episode match the patterns so far — and the two
 have to answer it the same way, or the emitted command won't reproduce the session. One matcher,
-used by both.
+used by both; episode matching is likewise shared through `parser.Listing`.
 
 **An unparseable release becomes a regex.** jimaku's dominant naming, the parenthesized
 `(CR 1920x1080 x264 AAC)` form, doesn't reliably resolve to a release group or streaming service, so
@@ -240,9 +254,11 @@ rather than to the file, so two runs over one directory cannot cross their outpu
 enough to be truncated to fit the filesystem otherwise loses exactly the tail that told it from its
 neighbour.
 
-**One bad file must not abort the batch.** Network, API, and filesystem failures are handled per
-video: report, count it, continue to the next. Post-processing failure likewise must not abort the
-batch or discard a subtitle that already downloaded successfully; it still makes the run exit nonzero.
+**One bad file must not abort the batch.** The entry and its listing are fetched before any video;
+failing that is a fatal `error:`. After that, unreadable episode numbers and download and
+filesystem failures are handled per video and file: report, count it, continue to the next.
+Post-processing failure likewise must not abort the batch or discard a subtitle that already
+downloaded successfully; it still makes the run exit nonzero.
 
 ## Logging and exit status
 
@@ -301,8 +317,9 @@ uses the native progress bar in terminals and suppresses it for cron/diagnostic 
 temporarily replacing only `ffsubsync.speech_transformers.tqdm`. This private adapter is coupled
 to ffsubsync 0.5.1 and must be revisited on upgrades; its binding is restored even on failure.
 ffsubsync loads lazily under a guard against its import-time logging setup. There is no
-`--dry-run`, no episode-number offset for absolute-vs-per-season numbering, no format conversion,
-and no structured output. Authentication and search preferences are environment-only.
+`--dry-run`, no manual episode-number offset (absolute-vs-per-season numbering comes only from
+anime-relations), no format conversion, and no structured output. Authentication and search
+preferences are environment-only.
 
 ## Development
 

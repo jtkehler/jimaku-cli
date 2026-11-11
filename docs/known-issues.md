@@ -4,17 +4,19 @@ These findings were reproduced during review of `b00da25`. They remain deferred;
 this document is not a claim that the proposed fixes are implemented.
 
 The subsequent fixes cover unique atomic-download temporaries, lowercase downloaded
-subtitle extensions, and `--no-all`. The temporary-file concurrency bug required
-**overlapping invocations**, not parallel downloads within one invocation. Unique
-temporaries do not serialize the complete download → align pipeline.
+subtitle extensions, `--no-all`, and classifying videos by filename alone, so parent
+directories such as `Season 1` no longer turn movies into unreadable episodes. The
+temporary-file concurrency bug required **overlapping invocations**, not parallel
+downloads within one invocation. Unique temporaries do not serialize the complete
+download → align pipeline.
 
 ## 1. Fractional episodes and numbered specials select ordinary episodes
 
-Location: `download.py`, `parse_episode`.
+Location: `parser.py`, `parse_episode`.
 
-Observed requests:
+Observed matches:
 
-| Local video | Requested episode | Intended behavior |
+| Local video | Matched episode | Intended behavior |
 |---|---:|---|
 | `Show - 03.5.mkv` | 3 | Numberless listing |
 | `Show - SP01.mkv` | 1 | Numberless listing |
@@ -30,10 +32,10 @@ parse, rather than replacing both with a large regex.
 
 ## 2. Malformed episode identifiers silently take the movie path
 
-Location: `download.py`, `parse_episode` and the per-video classification branch.
+Location: `parser.py`, `parse_episode` and `is_episode_type`.
 
 `Show.S01E-broken.1080p.WEB-DL.mkv` has no parsed episode, while GuessIt returns
-`type="movie"`. The command requests an unfiltered listing and can install episode
+`type="movie"`. The video receives the entry's whole listing and can install episode
 1's subtitle under the malformed video's name, reporting success.
 
 The existing regression is currently failing:
@@ -53,27 +55,17 @@ Unresolved policy: bare `86.mkv` could be a title or an episode. Broad English
 support boundary. The research candidate passed 24 filename cases, not every
 possible naming convention.
 
-## 3. Parent directory names affect numberless classification
+## 3. Download walks videos in lexical order
 
-Location: `download.py`, the call to `guessit.guessit(video)`.
+Location: `download.py`, video discovery.
 
-Under a directory named `Season 1`, both `A Silent Voice.mkv` and
-`Show - OVA.mkv` are incorrectly rejected as episodes with unreadable numbers.
-No listing is requested. `parse_episode` receives the basename, but the separate
-GuessIt classification receives the full path.
-
-Use the **basename consistently**, classify once, and remove the independent
-full-path decision. Also implement the documented numeric episode ordering;
-current discovery order is lexical (`1`, `10`, `2`). Numberless files need an
-explicit position and filename tie-breaker.
-
-Filename-parser tests should use a stable parent path: incidental pytest directory
-numbers can mask the existing malformed-episode failure.
+`search` sorts videos by episode number, numberless files last with filenames breaking
+ties, as documented. `download` still walks them in lexical order (`1`, `10`, `2`).
 
 ## 4. Different releases can collapse into one output
 
-Location: `download.py`, `parse_release`, `filter_release`, `output_name`, and the
-write loop.
+Location: `parser.py`, `parse_release`; `download.py`, `filter_release`,
+`output_name`, and the write loop.
 
 With `--all --rename`, these both have no parsed provider:
 

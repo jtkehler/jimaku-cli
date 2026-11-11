@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from jimaku_cli import cli, postprocess
-from jimaku_cli.api import FileEntry, JimakuError
+from jimaku_cli.api import Entry, FileEntry, JimakuError
 from jimaku_cli.download import app
 from jimaku_cli.search import app as search_app
 
@@ -41,27 +41,29 @@ def remote(episode: int) -> FileEntry:
 class StubClient:
     """Stands in for JimakuClient over a canned listing.
 
-    `listings` maps an episode number to what `get_files` should do: a list of
-    entries, or an exception to raise. `download_errors` maps a destination filename
-    to the failure its transfer should raise.
+    `listing` is the entry's whole file listing, or an exception `get_files`
+    should raise. `download_errors` maps a destination filename to the failure
+    its transfer should raise.
     """
 
     api_key = "fixture-key"
 
     def __init__(
         self,
-        listings: dict[int | None, list[FileEntry] | Exception] | None = None,
+        listing: list[FileEntry] | Exception | None = None,
         download_errors: dict[str, Exception] | None = None,
     ) -> None:
-        self.listings = listings or {}
+        self.listing = [] if listing is None else listing
         self.download_errors = download_errors or {}
         self.downloaded: list[Path] = []
 
-    def get_files(self, entry_id: int, episode: int | None = None) -> list[FileEntry]:
-        result = self.listings.get(episode, [])
-        if isinstance(result, Exception):
-            raise result
-        return result
+    def get_entry(self, entry_id: int) -> Entry:
+        return Entry(entry_id, "Show", "2026-01-01T00:00:00Z")
+
+    def get_files(self, entry_id: int) -> list[FileEntry]:
+        if isinstance(self.listing, Exception):
+            raise self.listing
+        return self.listing
 
     def download_file(self, url: str, dest: Path) -> None:
         error = self.download_errors.get(dest.name)
@@ -112,7 +114,7 @@ def run(
 def test_a_written_subtitle_is_reported_by_default(library):
     directory = library(1)
 
-    result = run(directory, StubClient({1: [remote(1)]}))
+    result = run(directory, StubClient([remote(1)]))
 
     assert "[download]" in result.stderr
     assert subtitle_name(1) in result.stderr
@@ -121,7 +123,7 @@ def test_a_written_subtitle_is_reported_by_default(library):
 def test_progress_never_reaches_stdout(library):
     directory = library(1)
 
-    result = run(directory, StubClient({1: [remote(1)]}))
+    result = run(directory, StubClient([remote(1)]))
 
     assert result.stdout == ""
 
@@ -131,7 +133,7 @@ def test_a_skipped_subtitle_prints_nothing_when_quiet(library, flag):
     directory = library(1)
     (directory / subtitle_name(1)).write_text(SUBTITLE_BODY, encoding="utf-8")
 
-    result = run(directory, StubClient({1: [remote(1)]}), flag)
+    result = run(directory, StubClient([remote(1)]), flag)
 
     assert result.stderr == ""
     assert result.stdout == ""
@@ -141,7 +143,7 @@ def test_a_skipped_subtitle_prints_nothing_when_quiet(library, flag):
 def test_a_missing_episode_prints_nothing_when_quiet(library, flag):
     directory = library(1)
 
-    result = run(directory, StubClient({1: []}), flag)
+    result = run(directory, StubClient([]), flag)
 
     assert result.stderr == ""
     assert result.stdout == ""
@@ -150,7 +152,7 @@ def test_a_missing_episode_prints_nothing_when_quiet(library, flag):
 def test_a_transfer_failure_is_reported_by_default(library):
     directory = library(1)
     client = StubClient(
-        {1: [remote(1)]},
+        [remote(1)],
         download_errors={subtitle_name(1): JimakuError(503, "Service Unavailable")},
     )
 
@@ -164,7 +166,7 @@ def test_default_reports_a_skipped_subtitle(library):
     directory = library(1)
     (directory / subtitle_name(1)).write_text(SUBTITLE_BODY, encoding="utf-8")
 
-    result = run(directory, StubClient({1: [remote(1)]}))
+    result = run(directory, StubClient([remote(1)]))
 
     assert "[skip]" in result.stderr
     assert subtitle_name(1) in result.stderr
@@ -173,7 +175,7 @@ def test_default_reports_a_skipped_subtitle(library):
 def test_default_reports_a_missing_episode(library):
     directory = library(1)
 
-    result = run(directory, StubClient({1: []}))
+    result = run(directory, StubClient([]))
 
     assert "[missing]" in result.stderr
     assert video_name(1) in result.stderr
@@ -183,7 +185,7 @@ def test_a_missing_episode_alone_exits_zero(library):
     """A season the provider has not uploaded yet is not a failure."""
     directory = library(1, 2)
 
-    result = run(directory, StubClient({1: [], 2: []}))
+    result = run(directory, StubClient([]))
 
     assert result.exit_code == 0
 
@@ -192,7 +194,7 @@ def test_a_fully_skipped_run_exits_zero(library):
     directory = library(1)
     (directory / subtitle_name(1)).write_text(SUBTITLE_BODY, encoding="utf-8")
 
-    result = run(directory, StubClient({1: [remote(1)]}))
+    result = run(directory, StubClient([remote(1)]))
 
     assert result.exit_code == 0
 
@@ -200,7 +202,7 @@ def test_a_fully_skipped_run_exits_zero(library):
 def test_a_transfer_failure_exits_nonzero(library):
     directory = library(1)
     client = StubClient(
-        {1: [remote(1)]},
+        [remote(1)],
         download_errors={subtitle_name(1): JimakuError(503, "Service Unavailable")},
     )
 
@@ -217,13 +219,26 @@ def test_an_unreadable_episode_number_exits_nonzero(library, tmp_path):
     assert result.exit_code != 0
 
 
+@pytest.mark.parametrize("name", ["A Silent Voice.mkv", "Show - OVA.mkv"])
+def test_a_season_directory_does_not_make_a_numberless_video_an_episode(tmp_path, name):
+    """GuessIt reads `Season 1` as a season; only the filename classifies a video."""
+    directory = tmp_path / "Season 1"
+    directory.mkdir()
+    (directory / name).write_bytes(b"")
+
+    result = run(directory, StubClient([remote(1)]))
+
+    assert result.exit_code == 0, result.stderr
+    assert (directory / subtitle_name(1)).exists()
+
+
 def test_an_align_failure_is_tagged_failed(library, monkeypatch):
     directory = library(1)
     monkeypatch.setattr(
         postprocess, "sync_subtitle", _raising(RuntimeError("ffmpeg missing"))
     )
 
-    result = run(directory, StubClient({1: [remote(1)]}), sync=True)
+    result = run(directory, StubClient([remote(1)]), sync=True)
 
     assert "[failed]" in result.stderr
     assert "ffmpeg missing" in result.stderr
@@ -241,7 +256,7 @@ def _raising(error: Exception):
 def test_a_run_that_wrote_something_ends_with_a_summary(library):
     directory = library(1)
 
-    result = run(directory, StubClient({1: [remote(1)]}))
+    result = run(directory, StubClient([remote(1)]))
 
     assert "summary: 1 downloaded, 0 skipped, 0 missing, 0 failed" in result.stderr
 
@@ -250,7 +265,7 @@ def test_the_summary_counts_every_outcome_by_default(library):
     directory = library(1, 2)
     (directory / subtitle_name(1)).write_text(SUBTITLE_BODY, encoding="utf-8")
 
-    result = run(directory, StubClient({1: [remote(1)], 2: [remote(2)]}))
+    result = run(directory, StubClient([remote(1), remote(2)]))
 
     assert "summary: 1 downloaded, 1 skipped, 0 missing, 0 failed" in result.stderr
 
@@ -266,7 +281,7 @@ def test_root_download_ignores_search_preferences(
         )
         for name in ("[A] Show - 01.ass", "[A] Show - 01.srt", "[B] Show - 01.srt")
     ]
-    client = StubClient({1: files})
+    client = StubClient(files)
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     monkeypatch.setenv("JIMAKU_SEARCH_ALL", "true")
@@ -315,7 +330,7 @@ def test_root_download_ignores_search_preferences(
 def test_a_missing_api_key_is_reported_on_stderr(library, monkeypatch, missing_key):
     directory = library(1)
     video = directory / video_name(1)
-    client = StubClient({1: [remote(1)]})
+    client = StubClient([remote(1)])
     monkeypatch.setattr(cli, "JimakuClient", lambda **kwargs: client)
     if missing_key is None:
         monkeypatch.delenv("JIMAKU_API_KEY", raising=False)
@@ -390,22 +405,39 @@ def test_one_bad_file_does_not_abort_the_batch(library):
     """The failure is reported and the next video is still attempted."""
     directory = library(1, 2)
     client = StubClient(
-        {1: JimakuError(500, "listing exploded"), 2: [remote(2)]},
+        [remote(1), remote(2)],
+        download_errors={subtitle_name(1): JimakuError(500, "download exploded")},
     )
 
     result = run(directory, client)
 
-    assert "listing exploded" in result.stderr
+    assert "download exploded" in result.stderr
     assert (directory / subtitle_name(2)).exists()
     assert result.exit_code != 0
+
+
+def test_a_listing_failure_ends_the_run_before_any_video(library):
+    directory = library(1, 2)
+
+    result = run(directory, StubClient(JimakuError(500, "listing exploded")))
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert (
+        "error: could not retrieve files for entry 1: HTTP 500: listing exploded"
+        in result.stderr
+    )
+    assert "[failed]" not in result.stderr
+    assert "summary:" not in result.stderr
+    assert not (directory / subtitle_name(1)).exists()
 
 
 @pytest.mark.parametrize("flags", [("-v",), ("--verbose",)])
 def test_verbose_enables_diagnostics_and_restores_logging(library, flags):
     class LoggingClient(StubClient):
-        def get_files(self, entry_id, episode=None):
+        def get_files(self, entry_id):
             logging.getLogger("jimaku_cli.api").debug("listing fixture")
-            return super().get_files(entry_id, episode)
+            return super().get_files(entry_id)
 
     root = logging.getLogger()
     before = (root.level, root.handlers[:])
@@ -422,7 +454,10 @@ def test_verbose_enables_diagnostics_and_restores_logging(library, flags):
 
 @pytest.mark.parametrize("flags", [("-q",), (), ("-v",)])
 def test_caught_failures_show_tracebacks_only_at_diagnostic_tier(library, flags):
-    result = run(library(1), StubClient({1: JimakuError(503, "offline")}), *flags)
+    client = StubClient(
+        [remote(1)], download_errors={subtitle_name(1): JimakuError(503, "offline")}
+    )
+    result = run(library(1), client, *flags)
     assert result.exit_code == 1
     assert result.stdout == ""
     assert "[failed]" in result.stderr
@@ -459,7 +494,7 @@ def alignment_backend(monkeypatch):
 def test_alignment_reports_progress_and_completion(library, alignment_backend, flags):
     alignment_backend()
     directory = library(1)
-    result = run(directory, StubClient({1: [remote(1)]}), *flags, sync=True)
+    result = run(directory, StubClient([remote(1)]), *flags, sync=True)
     assert result.exit_code == 0
     assert result.stdout == ""
     assert "ffsubsync: aligning" in result.stderr
@@ -482,7 +517,7 @@ def test_failed_alignment_never_reports_completion(
             postprocess.os, "replace", _raising(OSError("install failed"))
         )
     directory = library(1)
-    result = run(directory, StubClient({1: [remote(1)]}), sync=True)
+    result = run(directory, StubClient([remote(1)]), sync=True)
     assert "ffsubsync: aligning" in result.stderr
     assert "ffsubsync: complete" not in result.stderr
     assert "[failed]" in result.stderr
@@ -498,7 +533,7 @@ def test_a_failed_alignment_counts_as_its_own_operation(library, monkeypatch, fl
     monkeypatch.setattr(
         postprocess, "sync_subtitle", _raising(RuntimeError("align failed"))
     )
-    result = run(directory, StubClient({1: [remote(1)]}), *flags, sync=True)
+    result = run(directory, StubClient([remote(1)]), *flags, sync=True)
     assert result.exit_code == 1
     assert result.stdout == ""
     assert result.stderr.count("[failed]") == 1
@@ -510,7 +545,7 @@ def test_command_redacts_configured_key_from_chained_tracebacks(library):
     class KeyClient(StubClient):
         api_key = "fixture-key"
 
-        def get_files(self, entry_id, episode=None):
+        def get_files(self, entry_id):
             raise JimakuError(503, "offline") from ValueError(self.api_key)
 
     result = run(library(1), KeyClient(), "-v")
@@ -542,14 +577,14 @@ def test_verbosity_help_does_not_suggest_a_numeric_argument():
 )
 def test_public_output_modes(library, flags, all_outcomes, diagnostics):
     class LoggingClient(StubClient):
-        def get_files(self, entry_id, episode=None):
+        def get_files(self, entry_id):
             logging.getLogger("jimaku_cli.api").debug("listing fixture")
-            return super().get_files(entry_id, episode)
+            return super().get_files(entry_id)
 
     directory = library(1, 2, 3)
     existing = directory / subtitle_name(2)
     existing.write_text("existing subtitle", encoding="utf-8")
-    client = LoggingClient({1: [remote(1)], 2: [remote(2)], 3: []})
+    client = LoggingClient([remote(1), remote(2)])
 
     result = run(directory, client, *flags)
 
@@ -572,7 +607,10 @@ def test_public_output_modes(library, flags, all_outcomes, diagnostics):
 
 @pytest.mark.parametrize("flags", [("-q",), ("--quiet",)])
 def test_quiet_reports_failures_without_downloads(library, flags):
-    result = run(library(1), StubClient({1: JimakuError(503, "offline")}), *flags)
+    client = StubClient(
+        [remote(1)], download_errors={subtitle_name(1): JimakuError(503, "offline")}
+    )
+    result = run(library(1), client, *flags)
     assert result.exit_code == 1
     assert result.stdout == ""
     assert "[failed]" in result.stderr
@@ -593,7 +631,7 @@ def test_quiet_reports_failures_without_downloads(library, flags):
 )
 def test_conflicting_output_flags_do_no_work(library, monkeypatch, flags):
     class NoWorkClient(StubClient):
-        def get_files(self, entry_id, episode=None):
+        def get_entry(self, entry_id):
             raise AssertionError("invalid flags must be rejected before work")
 
     monkeypatch.setenv("JIMAKU_API_KEY", "fixture-key")

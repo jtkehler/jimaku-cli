@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from jimaku_cli.api import FileEntry
+from jimaku_cli.api import Entry, FileEntry
 from jimaku_cli.download import app, filter_release
 
 
@@ -21,15 +21,16 @@ def candidate(name: str, modified: str = "2026-01-01T00:00:00Z") -> FileEntry:
 class DownloadClient:
     api_key = "fixture-key"
 
-    def __init__(self, files: list[FileEntry] | dict[int | None, list[FileEntry]]):
+    def __init__(self, files: list[FileEntry]):
         self.files = files
-        self.listed: list[int | None] = []
+        self.listed: list[int] = []
         self.downloaded: list[Path] = []
 
-    def get_files(self, entry_id, episode=None):
-        self.listed.append(episode)
-        if isinstance(self.files, dict):
-            return self.files.get(episode, [])
+    def get_entry(self, entry_id):
+        return Entry(entry_id, "Show", "2026-01-01T00:00:00Z")
+
+    def get_files(self, entry_id):
+        self.listed.append(entry_id)
         return self.files
 
     def download_file(self, url, destination):
@@ -155,10 +156,10 @@ def test_preference_is_applied_independently_per_episode(download, tmp_path):
     first_srt = candidate("[Group] Show - 01.srt")
     second_ass = candidate("[Group] Show - 02.ass")
 
-    result, client = download({1: [first_ass, first_srt], 2: [second_ass]})
+    result, client = download([first_ass, first_srt, second_ass])
 
     assert result.exit_code == 0, result.stderr
-    assert client.listed == [1, 2]
+    assert client.listed == [1]
     assert client.downloaded == [tmp_path / first_srt.name, tmp_path / second_ass.name]
 
 

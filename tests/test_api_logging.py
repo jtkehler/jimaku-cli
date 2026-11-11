@@ -28,12 +28,12 @@ def test_api_diagnostics_show_request_and_status_without_changing_request(
 ):
     client, _, calls = http
     with diagnostic_session(verbose=verbose, api_key=client.api_key):
-        assert client.get_files(1, 3) == []
+        assert client.get_files(1) == []
     assert calls == [
         (
             "https://jimaku.cc/api/entries/1/files",
             {
-                "params": {"episode": 3},
+                "params": None,
                 "timeout": 10.0,
             },
         )
@@ -43,7 +43,7 @@ def test_api_diagnostics_show_request_and_status_without_changing_request(
     if not verbose:
         assert captured.err == ""
     else:
-        assert "GET /api/entries/1/files {'episode': 3}" in captured.err
+        assert "GET /api/entries/1/files {}" in captured.err
         assert "GET /api/entries/1/files -> 200" in captured.err
     assert "secret-key" not in captured.err and "Authorization" not in captured.err
 

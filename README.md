@@ -104,6 +104,12 @@ Release patterns are ordered preferences. Plain names match the parsed release
 exactly, ignoring case; prefix with `re:` to match filenames with a regex.
 Existing output files are skipped unless `--overwrite` is set.
 
+Each run fetches the entry's file list once and matches episode numbers locally.
+jimaku's anime-relations rules reconcile absolute and per-season numbering in both
+directions, so a local `- 13` can match a remote `S02E01`. The rules are cached in
+the app directory (`~/.config/jimaku-cli/anime-relations.json` on Linux) and
+revalidated on each run; the cached copy is used while jimaku is unreachable.
+
 Options shared by `search` and `download`:
 
 - `--rename` / `-r` / `--no-rename`: name subtitles after the video, adding the release and `.ja` tag.
