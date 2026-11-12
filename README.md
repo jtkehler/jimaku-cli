@@ -105,8 +105,11 @@ exactly, ignoring case; prefix with `re:` to match filenames with a regex.
 Existing output files are skipped unless `--overwrite` is set.
 
 Each run fetches the entry's file list once and matches episode numbers locally.
-jimaku's anime-relations rules reconcile absolute and per-season numbering in both
-directions, so a local `- 13` can match a remote `S02E01`. The rules are cached in
+jimaku's anime-relations rules renumber remote files as the site's own episode filter
+does, so a per-season `- 01` also matches a remote file numbered `13`. The video's
+number is not renumbered: an absolute `- 13` does not find a remote `S02E01`, and where
+a rule's ranges overlap one number can match two episodes (see
+[known issues](docs/known-issues.md), #8). The rules are cached in
 the app directory (`~/.config/jimaku-cli/anime-relations.json` on Linux) and
 revalidated on each run; the cached copy is used while jimaku is unreachable.
 

@@ -197,9 +197,10 @@ episode range the way that filter does: Anitopy's episode, with GuessIt only whe
 none. Files without an episode reach only numberless videos, and movie entries skip matching. The
 reading is still a best-effort guess from remote filenames.
 
-Absolute and per-season numbering meet through jimaku's anime-relations rules, applied to both
-the video's number and each file's range, so a local `- 13` matches a remote `S02E01` and the
-reverse. Unlike the server, only rules that stay within the entry's own AniList ID apply. The
+Absolute and per-season numbering meet through jimaku's anime-relations rules, applied as the
+server applies them: to each file's range, never to the video's number. A local `- 01` matches a
+remote file numbered `13` when a rule moves 13 to 1; a local `- 13` does not match a remote
+`S02E01`. Unlike the server, only rules that stay within the entry's own AniList ID apply. The
 relations document is cached as `anime-relations.json` in `typer.get_app_dir("jimaku-cli")` and
 revalidated by content hash on every run. When jimaku is unreachable the cached copy is used;
 without one, the listing fails. A failed cache write never fails a run.

@@ -80,16 +80,16 @@ class RelationsClient(JimakuClient):
         return self.document
 
 
-def test_renumbering_matches_in_both_directions() -> None:
+def test_renumbering_applies_to_remote_files_only() -> None:
     client = RelationsClient(
         ["Show S01E13.srt", "Show S02E01.srt", "Show S02E02.srt"], {"200": [RULE]}
     )
 
     listing = Listing.fetch(client, entry())
 
-    assert names(listing.for_episode(13)) == ["Show S01E13.srt", "Show S02E01.srt"]
     assert names(listing.for_episode(1)) == ["Show S01E13.srt", "Show S02E01.srt"]
-    assert names(listing.for_episode(14)) == ["Show S02E02.srt"]
+    assert names(listing.for_episode(13)) == ["Show S01E13.srt"]
+    assert names(listing.for_episode(14)) == []
 
 
 def test_rules_moving_episodes_to_another_anime_are_ignored() -> None:
@@ -112,20 +112,20 @@ def test_rules_moving_episodes_to_another_anime_are_ignored() -> None:
         (
             {"type": "inclusive", "begin": 13, "end": 24},
             {"type": "inclusive", "begin": 1, "end": 12},
-            14,
-            ["Show - 02.srt", "Show - 03.srt"],
+            2,
+            ["Show - 14.srt", "Show - 15.srt"],
         ),
         (
             {"type": "from", "value": 25},
             {"type": "from", "value": 1},
-            30,
-            ["Show - 06.srt", "Show - 05.srt"],
+            6,
+            ["Show - 30.srt", "Show - 29.srt"],
         ),
         (
             {"type": "inclusive", "begin": 1, "end": 2},
             {"type": "number", "value": 1},
-            2,
-            ["Show - 01.srt", "Show - 03.srt"],
+            1,
+            ["Show - 02.srt", "Show - 03.srt"],
         ),
     ],
     ids=["inclusive", "from", "number"],
@@ -171,33 +171,33 @@ def test_remote_episode_ranges(filename: str, expected: tuple[int, int] | None) 
 
 
 def test_relations_are_cached_and_revalidated_by_hash(cache: Path) -> None:
-    client = RelationsClient(["Show S02E01.srt"], {"200": [RULE]})
+    client = RelationsClient(["Show - 13.srt"], {"200": [RULE]})
 
-    assert names(Listing.fetch(client, entry()).for_episode(13)) == ["Show S02E01.srt"]
+    assert names(Listing.fetch(client, entry()).for_episode(1)) == ["Show - 13.srt"]
     assert client.requests == ["files", "relations"]
     assert json.loads(cache.read_text(encoding="utf-8"))["hash"] == "v1"
 
     client.requests.clear()
-    assert names(Listing.fetch(client, entry()).for_episode(13)) == ["Show S02E01.srt"]
+    assert names(Listing.fetch(client, entry()).for_episode(1)) == ["Show - 13.srt"]
     assert client.requests == ["files", "date"]
 
     client.document = {**client.document, "hash": "v2", "relations": {}}
     client.requests.clear()
-    assert Listing.fetch(client, entry()).for_episode(13) == []
+    assert Listing.fetch(client, entry()).for_episode(1) == []
     assert client.requests == ["files", "date", "relations"]
     assert json.loads(cache.read_text(encoding="utf-8"))["hash"] == "v2"
 
 
 def test_cached_relations_survive_an_unreachable_jimaku() -> None:
-    client = RelationsClient(["Show S02E01.srt"], {"200": [RULE]})
+    client = RelationsClient(["Show - 13.srt"], {"200": [RULE]})
     _ = Listing.fetch(client, entry())
     client.offline = True
 
-    assert names(Listing.fetch(client, entry()).for_episode(13)) == ["Show S02E01.srt"]
+    assert names(Listing.fetch(client, entry()).for_episode(1)) == ["Show - 13.srt"]
 
 
 def test_unreachable_relations_without_a_cache_fail() -> None:
-    client = RelationsClient(["Show S02E01.srt"], {"200": [RULE]})
+    client = RelationsClient(["Show - 13.srt"], {"200": [RULE]})
     client.offline = True
 
     with pytest.raises(JimakuError):
@@ -207,9 +207,9 @@ def test_unreachable_relations_without_a_cache_fail() -> None:
 def test_a_corrupt_cache_is_replaced(cache: Path) -> None:
     cache.parent.mkdir(parents=True)
     _ = cache.write_text("{", encoding="utf-8")
-    client = RelationsClient(["Show S02E01.srt"], {"200": [RULE]})
+    client = RelationsClient(["Show - 13.srt"], {"200": [RULE]})
 
-    assert names(Listing.fetch(client, entry()).for_episode(13)) == ["Show S02E01.srt"]
+    assert names(Listing.fetch(client, entry()).for_episode(1)) == ["Show - 13.srt"]
     assert client.requests == ["files", "relations"]
     assert json.loads(cache.read_text(encoding="utf-8"))["hash"] == "v1"
 
@@ -220,6 +220,6 @@ def test_an_unwritable_cache_does_not_fail_the_listing(
     blocker = tmp_path / "blocker"
     blocker.touch()
     monkeypatch.setattr(typer, "get_app_dir", lambda name: str(blocker / name))
-    client = RelationsClient(["Show S02E01.srt"], {"200": [RULE]})
+    client = RelationsClient(["Show - 13.srt"], {"200": [RULE]})
 
-    assert names(Listing.fetch(client, entry()).for_episode(13)) == ["Show S02E01.srt"]
+    assert names(Listing.fetch(client, entry()).for_episode(1)) == ["Show - 13.srt"]

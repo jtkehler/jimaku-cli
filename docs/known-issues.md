@@ -178,6 +178,70 @@ No drop-in diagnostic formatter satisfying these constraints was validated.
 Test malformed hosts/ports, query/fragment/userinfo/path tokens, percent encoding,
 path-only errors, chained exceptions, notes, and formatter-failure fallback.
 
+## 8. Episode renumbering is one-way, and overlapping ranges alias
+
+Location: `parser.py`, `Listing.for_episode` and `_readings`.
+
+Found while reviewing client-side episode matching, not `b00da25`. Counts and live
+responses below were taken on 2026-11-11.
+
+Matching follows jimaku's `?episode=` filter.[3] A remote file answers for the range
+in its name and for the range the entry's anime-relations rules move that range to.
+The video's number is taken as given and never renumbered. Two consequences follow.
+
+**An absolute-numbered video misses per-season files.** With a rule moving 13–24 to
+1–12, a video numbered 1 receives files labelled `01` and `13`. A video numbered 13
+receives only files labelled `13`, never `S02E01`.
+
+**A number inside both the source and destination range is ambiguous.** With a rule
+moving 13–25 to 1–13, "13" is either the per-season finale or the absolute opener,
+and a file labelled `13` answers for both. The server behaves the same way:
+
+| Request | Returned |
+|---|---|
+| `/api/entries/282/files?episode=13` (SPY×FAMILY Part 2) | 6 files labelled 13, 7 labelled 25 |
+| `/api/entries/2997/files?episode=1` (Fate/stay night UBW 2nd Season) | 1 file labelled 1, 4 labelled 13, including `S02E13.エピローグ` |
+
+Release priority, format, recency, and filename then rank the two episodes' files
+together, so the wrong episode can be written and reported as a download.
+
+Scope: 207 anime entries have rules within their own AniList ID. On 188 the ranges
+do not overlap and no number is ambiguous. On 19 they do: ten have one ambiguous
+number, three have two, two have 9 and 14, and four have open-ended rules
+("13 onward → 1 onward") where every number from the source start up is ambiguous.
+Those four are airing series.
+
+### Research direction and decisions
+
+Renumbering the video too, so that either of its numbers may fall in either of a
+file's ranges, was implemented and withdrawn. It is exact on the 188 entries and
+fixes the first consequence there. On the 19 it doubles the aliasing:
+
+- Entry 2997, video 13: `S02E01.決別の刻` ranked ahead of `S02E13.エピローグ`, with
+  and without `--release Netflix`.
+- Entry 5935 ([Oshi no Ko] 2nd Season), video 12, no release: `S02E01.第12話` ranked
+  ahead of `S02E12.第23話`.
+- With the finale not yet uploaded, a per-season video 13 received episode 1's
+  file instead of nothing.
+
+Two facts decide every ambiguous match: whether the local directory is numbered
+absolutely, and whether the remote release is. A per-season directory wants the
+current rule. An absolute directory wants the mirror: renumber the video and match
+file labels only. Applying both at once is never right.
+
+- A neighbouring video whose number lies only in the source range proves the
+  directory absolute. `Listing` would need the directory's numbers.
+- The same test within a remote release, grouped by `parse_release`, resolved 102
+  of the 173 ambiguous files on the 19 entries, conflicted on 3, and had no evidence
+  for 68. Eight of the 19 listings mix absolute and per-season labels.
+- Open-ended rules can never prove a directory absolute. "No video numbered below
+  the rule's start" is an untested tie-breaker; a per-season directory whose early
+  episodes were deleted would be misread.
+- An explicit flag emitted by `search` is certain but is a knob.
+
+Unresolved policy: what to assume when neither the directory nor the release gives
+evidence. Falling back to the current rule keeps today's behavior.
+
 ## Verification context
 
 - Review baseline: 223 passing tests and the malformed-episode failure above.
@@ -190,3 +254,4 @@ path-only errors, chained exceptions, notes, and formatter-failure fallback.
 
 [1] https://github.com/Rapptz/jimaku/blob/02f081992540923064bf09c1543bab5ea388da03/src/routes/entry.rs
 [2] https://github.com/Rapptz/jimaku/blob/02f081992540923064bf09c1543bab5ea388da03/src/routes/api/entries.rs
+[3] https://github.com/Rapptz/jimaku/blob/59f60ed10c441259cdabe9577819ad2df85c6164/src/routes/api/entries.rs

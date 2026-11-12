@@ -1,8 +1,8 @@
 """Episodes and releases parsed from filenames.
 
-Episode numbers for local videos and remote files are read in an entry's own numbering.
-jimaku's `?episode=` filter renumbers remote names in one direction only. Here both
-sides go through the same rules, using one listing request.
+Remote files are matched to a video's episode the way jimaku's `?episode=` filter matches
+them, from one listing request: a file answers for the range in its name and for the range
+its entry's relation rules move that range to. A video's own number is never renumbered.
 """
 
 import json
@@ -63,7 +63,6 @@ class Listing:
 
     files: list[FileEntry]
     ranges: list[list[tuple[int, int]]]  # Parallel to `files`: own range, then any renumbered one.
-    rules: list[Rule]
     movie: bool
 
     @classmethod
@@ -71,24 +70,19 @@ class Listing:
         """One listing request, plus anime relations when the entry can be renumbered."""
         files = client.get_files(entry.id)
         rules = load_rules(client, entry)
-        return cls(files, [_readings(file.name, rules) for file in files], rules, entry.flags.movie)
+        return cls(files, [_readings(file.name, rules) for file in files], entry.flags.movie)
 
     def for_episode(self, episode: int | None) -> list[FileEntry]:
         """Files for a video's episode; all of them for numberless videos and movies.
 
-        Either of the video's numbers, its own or its renumbered one, may fall in either
-        of a file's ranges, so renumbering works in both directions.
+        A file matches through either of its ranges; the video's number is taken as given.
         """
         if episode is None or self.movie:
             return self.files
-        numbers = {episode}
-        renumbered = renumber(self.rules, episode)
-        if renumbered is not None:
-            numbers.add(renumbered)
         return [
             file
             for file, spans in zip(self.files, self.ranges, strict=True)
-            if any(first <= number <= last for first, last in spans for number in numbers)
+            if any(first <= episode <= last for first, last in spans)
         ]
 
 
