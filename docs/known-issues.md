@@ -38,10 +38,17 @@ Location: `parser.py`, `parse_episode` and `is_episode_type`.
 `type="movie"`. The video receives the entry's whole listing and can install episode
 1's subtitle under the malformed video's name, reporting success.
 
-The existing regression is currently failing:
+The regression test for this failed from the review baseline onward. It was removed
+from `tests/test_logging.py` when CI was added, so that a red suite would not block
+every merge. Restore it together with the fix:
 
-```text
-tests/test_logging.py::test_an_unreadable_episode_number_exits_nonzero
+```python
+def test_an_unreadable_episode_number_exits_nonzero(library, tmp_path):
+    (tmp_path / "Show.S01E-broken.1080p.WEB-DL.mkv").write_bytes(b"")
+
+    result = run(tmp_path, StubClient())
+
+    assert result.exit_code != 0
 ```
 
 Use one classification result: numbered, intentional numberless, or

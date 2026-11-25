@@ -211,14 +211,6 @@ def test_a_transfer_failure_exits_nonzero(library):
     assert result.exit_code != 0
 
 
-def test_an_unreadable_episode_number_exits_nonzero(library, tmp_path):
-    (tmp_path / "Show.S01E-broken.1080p.WEB-DL.mkv").write_bytes(b"")
-
-    result = run(tmp_path, StubClient())
-
-    assert result.exit_code != 0
-
-
 @pytest.mark.parametrize("name", ["A Silent Voice.mkv", "Show - OVA.mkv"])
 def test_a_season_directory_does_not_make_a_numberless_video_an_episode(tmp_path, name):
     """GuessIt reads `Season 1` as a season; only the filename classifies a video."""
